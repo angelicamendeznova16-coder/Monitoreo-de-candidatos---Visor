@@ -116,15 +116,15 @@ def index():
   th, td { padding:8px 10px; border-bottom:1px solid #e5e7eb; text-align:left; }
   .cell { text-align:center; }
 
-  /* ===== CAMBIO 1: nada de alturas fijas; solo mínimos ===== */
+  /* Sin alturas fijas que “crezcan”: solo mínimos */
+  canvas { display:block; width:100%; }
   #likesPorCandidato, #comentPorCandidato, #candidatosTodos { min-height: 180px; }
   #ganadoresStack { min-height: 200px; }
 
-  /* Heatmaps: scroll horizontal; semanal con ancho mayor */
+  /* Heatmaps */
   .heatwrap{ overflow-x:auto; -webkit-overflow-scrolling: touch; }
   .heatwrap table{ min-width: 760px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
   .heatwrap th, .heatwrap td{ white-space: nowrap; font-size:12px; }
-
   #heatmapSemanal .heatwrap table{ min-width: 1100px; }
   #heatmapSemanal .heatwrap th, #heatmapSemanal .heatwrap td{ font-size:11px; }
 
@@ -257,20 +257,18 @@ def index():
     return Array.from(document.querySelectorAll('input[type=checkbox][name="'+name+'"]:checked')).map(i=>i.value);
   }
 
-  /* ===== CAMBIO 2: altura DINÁMICA real (atributos canvas) ===== */
+  // ===== Altura/Ancho DINÁMICO (atributos reales del canvas) =====
   function setDynamicHeight(canvasId, count){
     const c = document.getElementById(canvasId);
-
     const espectroFiltrado = qsmulti('espectro').length > 0;
     const rowHeight = espectroFiltrado ? 26 : 28;
     const padding   = 40;
     const rows = Math.max(count || 1, 1);
     const h = Math.max(180, Math.min(rows * rowHeight + padding, 600));
 
-    // Atributos reales que Chart.js usa para el layout
-    c.style.height = h + 'px';
+    // Atributos que usa Chart.js
     c.height = h;
-
+    // ancho según contenedor (fallback 800)
     const w = (c.parentElement && c.parentElement.clientWidth) ? c.parentElement.clientWidth : 800;
     c.width = w;
   }
@@ -318,23 +316,28 @@ def index():
       fetch('/api/heatmap?'+params.toString()).then(r=>r.json())
     ]);
 
+    // Alturas/ancho por canvas ANTES de construir el gráfico
     setDynamicHeight('likesPorCandidato', likesCand.length);
     setDynamicHeight('comentPorCandidato', comCand.length);
     setDynamicHeight('candidatosTodos',   todos.length);
 
+    // Config base: responsivo desactivado + grosor fijo
     const baseOpts = {
       indexAxis:'y',
-      responsive:true,
+      responsive:false,             // ⚠️ clave para que NO se “auto-redimensione”
       maintainAspectRatio:false,
       animation:false,
       plugins: { legend: { display:false } },
       scales: { y: { ticks: { autoSkip:false } }, x:{ ticks:{ maxTicksLimit: 8 } } }
     };
     const espectroOn = qsmulti('espectro').length>0;
-    const barCfg = espectroOn
-      ? { categoryPercentage:0.62, barPercentage:0.62, maxBarThickness:18 }
-      : { categoryPercentage:0.78, barPercentage:0.78, maxBarThickness:26 };
+    const barCfg = {
+      barThickness: espectroOn ? 16 : 20,   // grosor fijo
+      categoryPercentage: 0.9,              // menos hueco interno
+      barPercentage: 0.9
+    };
 
+    // Likes
     drawChart(
       document.getElementById('likesPorCandidato').getContext('2d'),
       {
@@ -354,6 +357,7 @@ def index():
       'likes'
     );
 
+    // Comentarios
     drawChart(
       document.getElementById('comentPorCandidato').getContext('2d'),
       {
@@ -373,6 +377,7 @@ def index():
       'coment'
     );
 
+    // Todos (likes)
     drawChart(
       document.getElementById('candidatosTodos').getContext('2d'),
       {
@@ -392,6 +397,7 @@ def index():
       'todos'
     );
 
+    // Ganadores
     const canvasStack = document.getElementById('ganadoresStack');
     const ctxStack = canvasStack.getContext('2d');
     const espsSel = qsmulti('espectro');
@@ -403,7 +409,6 @@ def index():
       const labels = w.map(x => x.candidato || 'ND');
       const data   = w.map(x => x.nd ? 0 : x.interacciones);
 
-      // altura razonable también para este canvas
       setDynamicHeight('ganadoresStack', labels.length);
 
       drawChart(ctxStack, {
@@ -416,22 +421,26 @@ def index():
             backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)',
             borderColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.55)',
             borderWidth: 1,
-            maxBarThickness: 28,
-            categoryPercentage: 0.6,
-            barPercentage: 0.6
+            barThickness: 18,
+            categoryPercentage: 0.9,
+            barPercentage: 0.9
           }]
         },
         options: {
-          responsive:true, maintainAspectRatio:false, animation:false,
+          indexAxis:'y',
+          responsive:false,
+          maintainAspectRatio:false,
+          animation:false,
           plugins:{
             legend:{ display:false },
             tooltip:{ callbacks:{ label: (ctx)=> fmt(ctx.raw) + ' interacciones' } }
           },
-          scales:{ x:{ ticks:{ autoSkip:false } }, y:{ title:{ display:true, text:'Interacciones' } } }
+          scales:{ x:{ ticks:{ maxTicksLimit: 8 } }, y:{ ticks:{ autoSkip:false }, title:{ display:true, text:'Interacciones' } } }
         }
       }, 'winners');
 
     } else {
+      // apilado por semana
       setDynamicHeight('ganadoresStack', (qsmulti('espectro').length || 3) * (SEMANAS.length || 6));
 
       const stackDatasets = (winSeries.espectros || []).map(esp => ({
@@ -443,16 +452,21 @@ def index():
         backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)',
         borderColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.55)',
         borderWidth: 0,
-        maxBarThickness: 28
+        barThickness: 18,
+        categoryPercentage: 0.9,
+        barPercentage: 0.9
       }));
 
       drawChart(ctxStack, {
         type: 'bar',
         data: { labels: (winSeries.semanas || []).map((s,i)=>'S'+(i+1)), datasets: stackDatasets },
         options: {
-          responsive:true, maintainAspectRatio:false, animation:false,
+          indexAxis:'x',
+          responsive:false,
+          maintainAspectRatio:false,
+          animation:false,
           plugins:{ legend:{ position:'top' } },
-          scales:{ x:{ stacked:true }, y:{ stacked:true, title:{ display:true, text:'Interacciones (ganador por espectro)' } } }
+          scales:{ x:{ stacked:true, ticks:{ autoSkip:false } }, y:{ stacked:true, title:{ display:true, text:'Interacciones (ganador por espectro)' } } }
         }
       }, 'winners');
     }
@@ -699,9 +713,11 @@ def api_heatmap_semanal():
                 values.append({"candidato": r, "semana": c, "valor": float(sub[col].iloc[0]), "nd": False})
     return jsonify({"rows": rows, "cols": cols, "values": values})
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+# Health-check ultra-ligero (opcional pero recomendado en Render)
 @app.route("/health")
 def health():
     return "ok", 200
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
