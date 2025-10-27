@@ -107,38 +107,51 @@ def index():
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-  body { font-family: system-ui,-apple-system,Segoe UI,Roboto; background:#f6f8fa; margin:0; padding:24px; }
-  h1 { margin:0 0 6px; }
+  :root{ --maxw: 1200px; }
+  body { font-family: system-ui,-apple-system,Segoe UI,Roboto; background:#f6f8fa; margin:0; }
+  .container{ max-width: var(--maxw); margin:0 auto; padding:24px 18px 36px; }
+  h1 { margin:0 0 6px; font-size:28px; }
   .sub { color:#6b7280; margin-bottom:18px; font-weight:600 }
   .cards { display:grid; grid-template-columns: repeat(4, 1fr); gap:16px; margin: 14px 0 24px; }
-  .card { background:#fff; border-radius:12px; padding:18px; box-shadow:0 6px 16px rgba(0,0,0,.06); }
+  .card { background:#fff; border-radius:12px; padding:16px; box-shadow:0 6px 16px rgba(0,0,0,.06); }
   .kpi { font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:.5px; }
-  .val { font-size:32px; font-weight:800; margin-top:6px; }
-  .grid3 { display:grid; grid-template-columns: repeat(3, 1fr); gap:20px; }
-  .panel { background:#fff; border-radius:12px; padding:16px; box-shadow:0 6px 16px rgba(0,0,0,.06); overflow:auto; max-height:80vh; }
+  .val { font-size:28px; font-weight:800; margin-top:6px; }
+  .grid3 { display:grid; grid-template-columns: repeat(3, 1fr); gap:16px; }
+  .panel { background:#fff; border-radius:12px; padding:14px; box-shadow:0 6px 16px rgba(0,0,0,.06); overflow:auto; }
   .filters { display:flex; gap:16px; align-items:flex-start; margin:8px 0 16px; flex-wrap:wrap; }
   .chipwrap label{ display:inline-flex; align-items:center; gap:6px; margin:4px 6px; padding:6px 10px; border:1px solid #e5e7eb; border-radius:999px; background:#fff; cursor:pointer; }
   select, button { padding:8px 10px; border-radius:8px; border:1px solid #e5e7eb; background:#fff; }
   table { width:100%; border-collapse:collapse; }
   th, td { padding:8px 10px; border-bottom:1px solid #e5e7eb; text-align:left; }
   .cell { text-align:center; }
-  .panel canvas { width: 100% !important; }
-  /* Heatmaps móviles: scroll horizontal y textos compactos */
+  /* tamaños por defecto de gráficos (más razonables en desktop) */
+  #likesPorCandidato, #comentPorCandidato, #candidatosTodos { height: 360px; }
+  #ganadoresStack { height: 380px; }
+
+  /* Heatmaps: scroll horizontal; semanal con ancho mayor */
   .heatwrap{ overflow-x:auto; -webkit-overflow-scrolling: touch; }
-  .heatwrap table{ min-width: 720px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
-  .heatwrap th, .heatwrap td{ white-space: nowrap; }
+  .heatwrap table{ min-width: 760px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
+  .heatwrap th, .heatwrap td{ white-space: nowrap; font-size:12px; }
+  /* El semanal necesita aún más ancho + fuentes más chicas para evitar superposición en móvil */
+  #heatmapSemanal .heatwrap table{ min-width: 1100px; }
+  #heatmapSemanal .heatwrap th, #heatmapSemanal .heatwrap td{ font-size:11px; }
+
   @media (max-width:1200px) {
     .grid3 { grid-template-columns: 1fr; }
     .cards { grid-template-columns: 1fr 1fr; }
   }
   @media (max-width: 768px){
-    .heatwrap table{ min-width: 900px; }
-    .heatwrap th, .heatwrap td{ font-size: 11px; padding:6px 8px; }
-    .panel{ overflow-x: auto; }
+    .container{ padding:18px 12px 28px; }
+    #likesPorCandidato, #comentPorCandidato, #candidatosTodos { height: 320px; }
+    #ganadoresStack { height: 340px; }
+    .heatwrap th, .heatwrap td{ font-size: 11px; }
+    #heatmapSemanal .heatwrap table{ min-width: 1200px; }
+    #heatmapSemanal .heatwrap th, #heatmapSemanal .heatwrap td{ font-size:10px; padding:6px 8px; }
   }
 </style>
 </head>
 <body>
+<div class="container">
   <h1>Dashboard de Candidatos por Red</h1>
   <div class="sub">Elaborado por Angélica Méndez</div>
 
@@ -188,18 +201,18 @@ def index():
     </div>
   </div>
 
-  <div class="panel" style="margin-top:20px">
-    <h3>Ganadores por semana y espectro (barras apiladas)</h3>
+  <div class="panel" style="margin-top:16px">
+    <h3>Ganadores por semana y espectro</h3>
     <canvas id="ganadoresStack"></canvas>
-    <div id="tablaGanadores" style="margin-top:12px"></div>
+    <div id="tablaGanadores" style="margin-top:10px"></div>
   </div>
 
-  <div class="panel" style="margin-top:20px">
+  <div class="panel" style="margin-top:16px">
     <h3>Heatmap de interacciones (Candidato × Red)</h3>
     <div id="heatmap"></div>
   </div>
 
-  <div class="panel" style="margin-top:20px">
+  <div class="panel" style="margin-top:16px">
     <div class="filters">
       <h3 style="margin:0">Heatmaps semanales (Candidato × Semana)</h3>
       <span style="flex:1"></span>
@@ -213,6 +226,7 @@ def index():
     </div>
     <div id="heatmapSemanal"></div>
   </div>
+</div>
 
 <script>
   // --- datos desde backend (seguros con tojson) ---
@@ -253,7 +267,7 @@ def index():
   renderChips('chipsRed', REDES, 'red');
   renderChips('chipsEsp', ESPECTROS, 'espectro');
 
-  // pre-selección de semana igual que antes
+  // pre-selección de semana
   document.getElementById('selSemana').value = qs('semana');
 
   function aplicar(){
@@ -278,10 +292,10 @@ def index():
   function setDynamicHeight(canvasId, count){
     const c = document.getElementById(canvasId);
     const espectroFiltrado = qsmulti('espectro').length>0;
-    let rowHeight = espectroFiltrado ? 20 : 26; // más delgadas si hay espectro
-    const padding = (count <= 3) ? 48 : 110;    // poco padding si hay pocos
-    const maxPx   = 900;
-    const rows = Math.max(count, 1);           // sin mínimo artificial grande
+    const rowHeight = espectroFiltrado ? 18 : 24;
+    const padding   = (count <= 3) ? 36 : 96;
+    const maxPx     = 700;
+    const rows = Math.max(count, 1);
     const h = Math.min(rows * rowHeight + padding, maxPx);
     c.style.height = h + 'px';
   }
@@ -304,7 +318,7 @@ def index():
     const winSeries = await fetch('/api/ganador-semanal-series?'+params.toString()).then(r=>r.json());
     const matrix    = await fetch('/api/heatmap?'+params.toString()).then(r=>r.json());
 
-    // alturas
+    // alturas horizontales
     setDynamicHeight('likesPorCandidato', likesCand.length);
     setDynamicHeight('comentPorCandidato', comCand.length);
     setDynamicHeight('candidatosTodos',   todos.length);
@@ -318,8 +332,9 @@ def index():
       scales: { y: { ticks: { autoSkip:false } }, x:{ ticks:{ maxTicksLimit: 8 } } }
     };
     const espectroOn = esps.length>0;
-    const barCfg = espectroOn ? { categoryPercentage:0.7, barPercentage:0.7, maxBarThickness:22 }
-                              : { categoryPercentage:0.82, barPercentage:0.82, maxBarThickness:30 };
+    const barCfg = espectroOn
+      ? { categoryPercentage:0.62, barPercentage:0.62, maxBarThickness:18 }
+      : { categoryPercentage:0.78, barPercentage:0.78, maxBarThickness:26 };
 
     new Chart(document.getElementById('likesPorCandidato').getContext('2d'), {
       type: 'bar',
@@ -366,59 +381,95 @@ def index():
       options: baseOpts
     });
 
-    // ===== Ganadores: barras apiladas por semana (valor = interacciones del ganador de cada espectro) =====
-    const ctxStack = document.getElementById('ganadoresStack').getContext('2d');
-    const nadaFiltrado = qsmulti('espectro').length === 0;
+    // ===== Ganadores: modo dual =====
+    const canvasStack = document.getElementById('ganadoresStack');
+    const ctxStack = canvasStack.getContext('2d');
+    const espsSel = qsmulti('espectro');
+    const fmt = (v) => new Intl.NumberFormat('es-ES').format(Math.round(v||0));
 
-    const stackDatasets = (winSeries.espectros || []).map(esp => ({
-      label: esp,
-      data: (winSeries.semanas || []).map(sem => {
-        const cell = (winSeries.values || []).find(v => v.espectro===esp && v.semana===sem);
-        return cell ? (cell.nd? 0 : cell.interacciones) : 0;
-      }),
-      backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)',
-      borderColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.55)',
-      borderWidth: nadaFiltrado ? 1 : 0
-    }));
-    new Chart(ctxStack, {
-      type: 'bar',
-      data: { labels: winSeries.semanas || [], datasets: stackDatasets },
-      options: {
-        responsive:true, maintainAspectRatio:false, animation:false,
-        plugins:{ 
-          legend:{ position:'top' },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => {
-                const v = Math.round(ctx.raw || 0).toLocaleString('es-ES');
-                return `${ctx.dataset.label}: ${v}`;
+    if (espsSel.length === 1) {
+      // 1 espectro -> barras con NOMBRE DEL CANDIDATO en eje X
+      const esp = espsSel[0];
+      const w = winners.filter(x => x.espectro === esp);
+      const labels = w.map(x => x.candidato || 'ND');
+      const data   = w.map(x => x.nd ? 0 : x.interacciones);
+      const baseH = 340, extra = Math.max(0, (labels.length - 8)) * 10;
+      canvasStack.style.height = (baseH + extra) + 'px';
+
+      new Chart(ctxStack, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: esp,
+            data,
+            backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)',
+            borderColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.55)',
+            borderWidth: 1,
+            maxBarThickness: 28,
+            categoryPercentage: 0.6,
+            barPercentage: 0.6
+          }]
+        },
+        options: {
+          responsive:true, maintainAspectRatio:false, animation:false,
+          plugins:{
+            legend:{ display:false },
+            tooltip:{ callbacks:{ label: (ctx)=> fmt(ctx.raw) + ' interacciones' } }
+          },
+          scales:{ x:{ ticks:{ autoSkip:false } }, y:{ title:{ display:true, text:'Interacciones' } } }
+        }
+      });
+
+    } else {
+      // general/apilado por semana
+      const nadaFiltrado = espsSel.length === 0;
+      canvasStack.style.height = '380px';
+
+      const stackDatasets = (winSeries.espectros || []).map(esp => ({
+        label: esp,
+        data: (winSeries.semanas || []).map(sem => {
+          const cell = (winSeries.values || []).find(v => v.espectro===esp && v.semana===sem);
+          return cell ? (cell.nd? 0 : cell.interacciones) : 0;
+        }),
+        backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)',
+        borderColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.55)',
+        borderWidth: nadaFiltrado ? 1 : 0,
+        maxBarThickness: 28
+      }));
+
+      new Chart(ctxStack, {
+        type: 'bar',
+        data: { labels: (winSeries.semanas || []).map((s,i)=>'S'+(i+1)), datasets: stackDatasets },
+        options: {
+          responsive:true, maintainAspectRatio:false, animation:false,
+          plugins:{ 
+            legend:{ position:'top' },
+            tooltip: {
+              callbacks: {
+                title: (items)=> {
+                  const idx = items?.[0]?.dataIndex ?? 0;
+                  const s = winSeries.semanas?.[idx] || '';
+                  return 'Semana: ' + s;
+                },
+                label: (ctx) => {
+                  const esp = ctx.dataset.label;
+                  const idx = ctx.dataIndex;
+                  const sem = winSeries.semanas?.[idx];
+                  const cell = (winSeries.values || []).find(v => v.espectro===esp && v.semana===sem);
+                  const ganador = cell?.nd ? 'ND' : (cell && cell.interacciones>0 ? 'Ganador: '+(cell.candidato||'') : 'Sin ganador');
+                  const valor = ' • ' + fmt(ctx.raw) + ' interacciones';
+                  return `${ganador}${valor}`;
+                }
               }
             }
-          }
-        },
-        scales:{ 
-          x:{ stacked:true },
-          y:{ stacked:true, title:{ display:true, text:'Interacciones (ganador por espectro)' } }
+          },
+          scales:{ x:{ stacked:true }, y:{ stacked:true, title:{ display:true, text:'Interacciones (ganador por espectro)' } } }
         }
-      }
-    });
-
-    // Tabla de ganadores (lista completa semana × espectro)
-    const cont = document.getElementById('tablaGanadores');
-    if(!winners.length) {
-      cont.innerHTML = '<em>Sin datos.</em>';
-    } else {
-      let html = '<table><thead><tr><th>Semana</th><th>Espectro</th><th>Candidato</th><th>Interacciones</th></tr></thead><tbody>';
-      for (const w of winners) {
-        const disp = (w.nd ? 'ND' : w.candidato);
-        const val  = (w.nd ? ''   : new Intl.NumberFormat('es-ES').format(Math.round(w.interacciones)));
-        html += `<tr><td>${w.semana}</td><td>${w.espectro}</td><td>${disp}</td><td class="cell">${val}</td></tr>`;
-      }
-      html += '</tbody></table>';
-      cont.innerHTML = html;
+      });
     }
 
-    // Heatmap general (Candidato × Red)
+    // ===== Heatmap general (Candidato × Red)
     const hm = document.getElementById('heatmap');
     if(!matrix.values.length) {
       hm.innerHTML = '<em>Sin datos.</em>';
@@ -465,12 +516,18 @@ def index():
     }
     const rows = m.rows, cols = m.cols, vals = m.values;
     const max = Math.max(...vals.map(v=>v.valor||0));
+
+    // encabezados cortos para evitar superposición (S1, S2, ...)
+    const shortCols = cols.map((c,i)=> 'S'+(i+1));
+
     let html = '<table><thead><tr><th></th>';
-    for (const col of cols) html += `<th>${col}</th>`;
+    for (const sc of shortCols) html += `<th>${sc}</th>`;
     html += '</tr></thead><tbody>';
-    for (const r of rows) {
+    for (let i=0;i<rows.length;i++){
+      const r = rows[i];
       html += `<tr><th>${r}</th>`;
-      for (const c of cols) {
+      for (let j=0;j<cols.length;j++){
+        const c = cols[j];
         const item = vals.find(v => v.candidato===r && v.semana===c);
         const v = item ? (item.valor||0) : 0;
         const pct = max? (v/max) : 0;
