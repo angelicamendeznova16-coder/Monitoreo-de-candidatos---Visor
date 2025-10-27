@@ -62,8 +62,8 @@ def _parse_multi(param_value: str):
 def aplicar_filtros(df):
     """
     Filtros:
-      red=R1,R2      (opcional, multi)
-      semana=S1      (opcional, única)
+      red=R1,R2    (opcional, multi)
+      semana=S1    (opcional, única)
       espectro=E1,E2 (opcional, multi)
     """
     red_multi      = _parse_multi((request.args.get("red") or "").strip())
@@ -83,21 +83,12 @@ app = Flask(__name__)
 
 @app.route("/")
 def index():
-    df = load_all()
-    total_filas   = len(df)
-    redes         = sorted(df[COL_RED].dropna().unique().tolist()) if not df.empty else []
-    semanas       = sorted(df["Semana"].dropna().unique().tolist()) if not df.empty else []
-    espectros     = sorted(df[COL_ESPECTRO].dropna().unique().tolist()) if not df.empty else []
-    total_likes   = int(df[COL_LIKES].fillna(0).sum()) if COL_LIKES in df else 0
-    total_coment  = int(df[COL_COMENT].fillna(0).sum()) if COL_COMENT in df else 0
-    n_candidatos  = df[COL_CANDIDATO].nunique() if not df.empty else 0
-
+    # Página liviana: NO lee Excel. Todo se carga por fetch().
     espectro_colors = {
         "Centro":    "rgba(16,185,129,0.55)",   # verde
         "Derecha":   "rgba(59,130,246,0.55)",   # azul
         "Izquierda": "rgba(245,158,11,0.55)",   # naranja
     }
-
     template = r'''
 <!doctype html>
 <html lang="es">
@@ -148,6 +139,9 @@ def index():
     #heatmapSemanal .heatwrap table{ min-width: 1200px; }
     #heatmapSemanal .heatwrap th, #heatmapSemanal .heatwrap td{ font-size:10px; padding:6px 8px; }
   }
+  /* "skeleton" simple mientras cargan datos */
+  .skeleton{ background:linear-gradient(90deg,#eee,#f5f5f5,#eee); background-size:200% 100%; animation:sh 1.2s infinite; border-radius:8px; height:20px; }
+  @keyframes sh{ 0%{background-position:200% 0} 100%{background-position:-200% 0} }
 </style>
 </head>
 <body>
@@ -155,28 +149,28 @@ def index():
   <h1>Dashboard de Candidatos por Red</h1>
   <div class="sub">Elaborado por Angélica Méndez</div>
 
-  <div class="cards">
-    <div class="card"><div class="kpi">Filas analizadas</div><div class="val">{{ total_filas | int }}</div></div>
-    <div class="card"><div class="kpi">Suma de likes promedio</div><div class="val">{{ total_likes | int }}</div></div>
-    <div class="card"><div class="kpi">Suma de comentarios promedio</div><div class="val">{{ total_coment | int }}</div></div>
-    <div class="card"><div class="kpi">Candidatos únicos</div><div class="val">{{ n_candidatos | int }}</div></div>
+  <div class="cards" id="kpis">
+    <div class="card"><div class="kpi">Filas analizadas</div><div class="val" id="kpiFilas"><span class="skeleton" style="width:80px;display:inline-block"></span></div></div>
+    <div class="card"><div class="kpi">Suma de likes promedio</div><div class="val" id="kpiLikes"><span class="skeleton" style="width:80px;display:inline-block"></span></div></div>
+    <div class="card"><div class="kpi">Suma de comentarios promedio</div><div class="val" id="kpiCom"><span class="skeleton" style="width:80px;display:inline-block"></span></div></div>
+    <div class="card"><div class="kpi">Candidatos únicos</div><div class="val" id="kpiCand"><span class="skeleton" style="width:80px;display:inline-block"></span></div></div>
   </div>
 
   <div class="panel">
     <div class="filters">
       <div>
         <strong>Red(es):</strong><br>
-        <span id="chipsRed" class="chipwrap"></span>
+        <span id="chipsRed" class="chipwrap"><span class="skeleton" style="display:inline-block;width:200px"></span></span>
       </div>
 
       <div>
         <strong>Semana:</strong><br>
-        <select id="selSemana"><option value="">(todas)</option>{% for s in semanas %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select>
+        <select id="selSemana"><option value="">(todas)</option></select>
       </div>
 
       <div>
         <strong>Espectro(s):</strong><br>
-        <span id="chipsEsp" class="chipwrap"></span>
+        <span id="chipsEsp" class="chipwrap"><span class="skeleton" style="display:inline-block;width:200px"></span></span>
       </div>
 
       <div style="align-self:flex-end">
@@ -229,11 +223,8 @@ def index():
 </div>
 
 <script>
-  // --- datos desde backend ---
+  // --- colores de espectro desde el servidor ---
   const ESPECTRO_COLORS = {{ espectro_colors | tojson }};
-  const REDES           = {{ redes | tojson }};
-  const SEMANAS         = {{ semanas | tojson }};
-  const ESPECTROS       = {{ espectros | tojson }};
 
   // paleta
   const PALETTE = [
@@ -241,6 +232,9 @@ def index():
     "rgba(234,179,8,0.55)","rgba(244,114,182,0.55)","rgba(16,185,129,0.55)","rgba(251,113,133,0.55)",
     "rgba(96,165,250,0.55)","rgba(250,204,21,0.55)","rgba(147,197,253,0.55)","rgba(253,186,116,0.55)"
   ];
+
+  // Bootstrap data (redes, semanas, espectros) llega por API:
+  let REDES = [], SEMANAS = [], ESPECTROS = [];
 
   // --- registro global de charts para evitar "gráficos apilados" ---
   const CH = { likes:null, coment:null, todos:null, winners:null };
@@ -271,26 +265,6 @@ def index():
     return Array.from(document.querySelectorAll('input[type=checkbox][name="'+name+'"]:checked')).map(i=>i.value);
   }
 
-  renderChips('chipsRed', REDES, 'red');
-  renderChips('chipsEsp', ESPECTROS, 'espectro');
-  document.getElementById('selSemana').value = qs('semana');
-
-  function aplicar(){
-    const u=new URL(window.location.href);
-    const reds = getChipValues('red');
-    const esps = getChipValues('espectro');
-    const sem  = document.getElementById('selSemana').value || '';
-    if(reds.length) u.searchParams.set('red', reds.join(',')); else u.searchParams.delete('red');
-    if(esps.length) u.searchParams.set('espectro', esps.join(',')); else u.searchParams.delete('espectro');
-    if(sem) u.searchParams.set('semana', sem); else u.searchParams.delete('semana');
-    window.location.href = u.toString();
-  }
-  function limpiar(){
-    const u=new URL(window.location.href);
-    ['red','semana','espectro'].forEach(p=>u.searchParams.delete(p));
-    window.location.href=u.toString();
-  }
-
   // ===== Layout helpers =====
   function setDynamicHeight(canvasId, count){
     const c = document.getElementById(canvasId);
@@ -307,19 +281,50 @@ def index():
   }
   function colorsByCandidate(n) { return Array.from({length:n}, (_,i)=> PALETTE[i % PALETTE.length]); }
 
-  async function draw(){
+  // ========== Bootstrap inicial ==========
+  async function bootstrap(){
+    // Obtener listas + KPIs ligeros
+    const boot = await fetch('/api/bootstrap').then(r=>r.json());
+
+    REDES = boot.redes || [];
+    SEMANAS = boot.semanas || [];
+    ESPECTROS = boot.espectros || [];
+
+    // Rellenar KPIs
+    document.getElementById('kpiFilas').innerText = (boot.kpis.filas || 0).toLocaleString('es-ES');
+    document.getElementById('kpiLikes').innerText = (boot.kpis.likes || 0).toLocaleString('es-ES');
+    document.getElementById('kpiCom').innerText   = (boot.kpis.coment || 0).toLocaleString('es-ES');
+    document.getElementById('kpiCand').innerText  = (boot.kpis.candidatos || 0).toLocaleString('es-ES');
+
+    // Rellenar selects/chips
+    // Semana
+    const selSemana = document.getElementById('selSemana');
+    selSemana.innerHTML = '<option value="">(todas)</option>' + SEMANAS.map(s=>`<option value="${s}">${s}</option>`).join('');
+    selSemana.value = qs('semana');
+
+    // Chips
+    renderChips('chipsRed', REDES, 'red');
+    renderChips('chipsEsp', ESPECTROS, 'espectro');
+
+    // Dibujar todo
+    await drawAll();
+  }
+
+  async function drawAll(){
     const params = new URLSearchParams();
     const reds = qsmulti('red'), esps = qsmulti('espectro');
     if(reds.length) params.set('red', reds.join(','));
     if(qs('semana')) params.set('semana', qs('semana'));
     if(esps.length) params.set('espectro', esps.join(','));
 
-    const likesCand = await fetch('/api/likes-por-candidato?'+params.toString()).then(r=>r.json());
-    const comCand   = await fetch('/api/comentarios-por-candidato?'+params.toString()).then(r=>r.json());
-    const todos     = await fetch('/api/candidatos-todos?'+params.toString()).then(r=>r.json());
-    const winners   = await fetch('/api/ganador-semanal?'+params.toString()).then(r=>r.json());
-    const winSeries = await fetch('/api/ganador-semanal-series?'+params.toString()).then(r=>r.json());
-    const matrix    = await fetch('/api/heatmap?'+params.toString()).then(r=>r.json());
+    const [likesCand, comCand, todos, winners, winSeries, matrix] = await Promise.all([
+      fetch('/api/likes-por-candidato?'+params.toString()).then(r=>r.json()),
+      fetch('/api/comentarios-por-candidato?'+params.toString()).then(r=>r.json()),
+      fetch('/api/candidatos-todos?'+params.toString()).then(r=>r.json()),
+      fetch('/api/ganador-semanal?'+params.toString()).then(r=>r.json()),
+      fetch('/api/ganador-semanal-series?'+params.toString()).then(r=>r.json()),
+      fetch('/api/heatmap?'+params.toString()).then(r=>r.json())
+    ]);
 
     // alturas horizontales
     setDynamicHeight('likesPorCandidato', likesCand.length);
@@ -334,11 +339,12 @@ def index():
       plugins: { legend: { display:false } },
       scales: { y: { ticks: { autoSkip:false } }, x:{ ticks:{ maxTicksLimit: 8 } } }
     };
-    const espectroOn = esps.length>0;
+    const espectroOn = qsmulti('espectro').length>0;
     const barCfg = espectroOn
       ? { categoryPercentage:0.62, barPercentage:0.62, maxBarThickness:18 }
       : { categoryPercentage:0.78, barPercentage:0.78, maxBarThickness:26 };
 
+    // Likes
     drawChart(
       document.getElementById('likesPorCandidato').getContext('2d'),
       {
@@ -358,6 +364,7 @@ def index():
       'likes'
     );
 
+    // Comentarios
     drawChart(
       document.getElementById('comentPorCandidato').getContext('2d'),
       {
@@ -377,6 +384,7 @@ def index():
       'coment'
     );
 
+    // Todos (likes)
     drawChart(
       document.getElementById('candidatosTodos').getContext('2d'),
       {
@@ -396,14 +404,13 @@ def index():
       'todos'
     );
 
-    // ===== Ganadores: modo dual =====
+    // Ganadores (dual)
     const canvasStack = document.getElementById('ganadoresStack');
     const ctxStack = canvasStack.getContext('2d');
     const espsSel = qsmulti('espectro');
     const fmt = (v) => new Intl.NumberFormat('es-ES').format(Math.round(v||0));
 
     if (espsSel.length === 1) {
-      // 1 espectro -> barras con NOMBRE DEL CANDIDATO en eje X
       const esp = espsSel[0];
       const w = winners.filter(x => x.espectro === esp);
       const labels = w.map(x => x.candidato || 'ND');
@@ -437,7 +444,6 @@ def index():
       }, 'winners');
 
     } else {
-      // general/apilado por semana
       const nadaFiltrado = espsSel.length === 0;
       canvasStack.style.height = '380px';
 
@@ -484,7 +490,7 @@ def index():
       }, 'winners');
     }
 
-    // ===== Heatmap general (Candidato × Red)
+    // Heatmap general
     const hm = document.getElementById('heatmap');
     if(!matrix.values.length) {
       hm.innerHTML = '<em>Sin datos.</em>';
@@ -510,8 +516,24 @@ def index():
       hm.innerHTML = '<div class="heatwrap">' + html + '</div>';
     }
 
-    // Heatmap semanal (Candidato × Semana) con selector de métrica
+    // Heatmap semanal
     await redibujarSemanal();
+  }
+
+  function aplicar(){
+    const u=new URL(window.location.href);
+    const reds = getChipValues('red');
+    const esps = getChipValues('espectro');
+    const sem  = document.getElementById('selSemana').value || '';
+    if(reds.length) u.searchParams.set('red', reds.join(',')); else u.searchParams.delete('red');
+    if(esps.length) u.searchParams.set('espectro', esps.join(',')); else u.searchParams.delete('espectro');
+    if(sem) u.searchParams.set('semana', sem); else u.searchParams.delete('semana');
+    window.location.href = u.toString();
+  }
+  function limpiar(){
+    const u=new URL(window.location.href);
+    ['red','semana','espectro'].forEach(p=>u.searchParams.delete(p));
+    window.location.href=u.toString();
   }
 
   async function redibujarSemanal(){
@@ -531,9 +553,7 @@ def index():
     }
     const rows = m.rows, cols = m.cols, vals = m.values;
     const max = Math.max(...vals.map(v=>v.valor||0));
-
-    // encabezados cortos para evitar superposición (S1, S2, ...)
-    const shortCols = cols.map((c,i)=> 'S'+(i+1));
+    const shortCols = cols.map((c,i)=> 'S'+(i+1)); // columnas cortas
 
     let html = '<table><thead><tr><th></th>';
     for (const sc of shortCols) html += `<th>${sc}</th>`;
@@ -556,24 +576,28 @@ def index():
     el.innerHTML = '<div class="heatwrap">' + html + '</div>';
   }
 
-  draw();
+  // Arrancar
+  bootstrap();
 </script>
 </body>
 </html>
 '''
-    return render_template_string(
-        template,
-        total_filas=total_filas,
-        total_likes=total_likes,
-        total_coment=total_coment,
-        n_candidatos=n_candidatos,
-        redes=redes,
-        semanas=semanas,
-        espectros=espectros,
-        espectro_colors=espectro_colors,
-    )
+    return render_template_string(template)
 
 # ================== APIs ==================
+@app.route("/api/bootstrap")
+def api_bootstrap():
+    df = load_all()
+    redes     = sorted(df[COL_RED].dropna().unique().tolist()) if not df.empty else []
+    semanas   = sorted(df["Semana"].dropna().unique().tolist()) if not df.empty else []
+    espectros = sorted(df[COL_ESPECTRO].dropna().unique().tolist()) if not df.empty else []
+    kpis = {
+        "filas": len(df),
+        "likes": int(df[COL_LIKES].fillna(0).sum()) if COL_LIKES in df else 0,
+        "coment": int(df[COL_COMENT].fillna(0).sum()) if COL_COMENT in df else 0,
+        "candidatos": df[COL_CANDIDATO].nunique() if not df.empty else 0
+    }
+    return jsonify({"redes": redes, "semanas": semanas, "espectros": espectros, "kpis": kpis})
 
 @app.route("/api/likes-por-candidato")
 def api_likes_por_candidato():
@@ -667,8 +691,8 @@ def api_ganador_semanal_series():
             else:
                 g = df_se.groupby(COL_CANDIDATO, as_index=False)["Interacciones"].mean()
                 row = g.loc[g["Interacciones"].idxmax()]
-                values.append({"semana": sem, "espectro": esp, "interacciones": float(row["Interacciones"]), "nd": False})
-
+                # Para tooltips con "ganador", devolvemos también el candidato (opcional)
+                values.append({"semana": sem, "espectro": esp, "interacciones": float(row["Interacciones"]), "nd": False, "candidato": row[COL_CANDIDATO]})
     return jsonify({"semanas": semanas, "espectros": espectros, "values": values})
 
 @app.route("/api/heatmap")
