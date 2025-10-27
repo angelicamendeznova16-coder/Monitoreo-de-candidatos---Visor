@@ -235,6 +235,14 @@ def index():
   const SEMANAS         = {{ semanas | tojson }};
   const ESPECTROS       = {{ espectros | tojson }};
 
+  // --- registro global de instancias Chart.js (para destruir antes de redibujar) ---
+  const CH = { likes:null, coment:null, todos:null, winners:null };
+  function drawChart(ctx, cfg, key){
+    if (CH[key]) { try { CH[key].destroy(); } catch(e){} }
+    CH[key] = new Chart(ctx, cfg);
+    return CH[key];
+  }
+
   // paleta para "general"
   const PALETTE = [
     "rgba(99,102,241,0.55)","rgba(236,72,153,0.55)","rgba(34,197,94,0.55)","rgba(59,130,246,0.55)",
@@ -336,380 +344,50 @@ def index():
       ? { categoryPercentage:0.62, barPercentage:0.62, maxBarThickness:18 }
       : { categoryPercentage:0.78, barPercentage:0.78, maxBarThickness:26 };
 
-    new Chart(document.getElementById('likesPorCandidato').getContext('2d'), {
-      type: 'bar',
-      data: {
-        labels: likesCand.map(d=>d.candidato),
-        datasets: [{
-          label: 'Likes promedio',
-          data: likesCand.map(d=>d.likes),
-          backgroundColor: espectroOn ? colorsBySpectro(likesCand, likesCand.map(d=>d.espectro))
-                                       : colorsByCandidate(likesCand.length),
-          ...barCfg
-        }]
-      },
-      options: baseOpts
-    });
-
-    new Chart(document.getElementById('comentPorCandidato').getContext('2d'), {
-      type: 'bar',
-      data: {
-        labels: comCand.map(d=>d.candidato),
-        datasets: [{
-          label: 'Comentarios promedio',
-          data: comCand.map(d=>d.comentarios),
-          backgroundColor: espectroOn ? colorsBySpectro(comCand, comCand.map(d=>d.espectro))
-                                       : colorsByCandidate(comCand.length),
-          ...barCfg
-        }]
-      },
-      options: baseOpts
-    });
-
-    new Chart(document.getElementById('candidatosTodos').getContext('2d'), {
-      type: 'bar',
-      data: {
-        labels: todos.map(d=>d.candidato),
-        datasets: [{
-          label: 'Likes promedio',
-          data: todos.map(d=>d.likes),
-          backgroundColor: espectroOn ? colorsBySpectro(todos, todos.map(d=>d.espectro))
-                                       : colorsByCandidate(todos.length),
-          ...barCfg
-        }]
-      },
-      options: baseOpts
-    });
-
-    // ===== Ganadores: modo dual =====
-    const canvasStack = document.getElementById('ganadoresStack');
-    const ctxStack = canvasStack.getContext('2d');
-    const espsSel = qsmulti('espectro');
-    const fmt = (v) => new Intl.NumberFormat('es-ES').format(Math.round(v||0));
-
-    if (espsSel.length === 1) {
-      // 1 espectro -> barras con NOMBRE DEL CANDIDATO en eje X
-      const esp = espsSel[0];
-      const w = winners.filter(x => x.espectro === esp);
-      const labels = w.map(x => x.candidato || 'ND');
-      const data   = w.map(x => x.nd ? 0 : x.interacciones);
-      const baseH = 340, extra = Math.max(0, (labels.length - 8)) * 10;
-      canvasStack.style.height = (baseH + extra) + 'px';
-
-      new Chart(ctxStack, {
+    // Likes
+    drawChart(
+      document.getElementById('likesPorCandidato').getContext('2d'),
+      {
         type: 'bar',
         data: {
-          labels,
+          labels: likesCand.map(d=>d.candidato),
           datasets: [{
-            label: esp,
-            data,
-            backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)',
-            borderColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.55)',
-            borderWidth: 1,
-            maxBarThickness: 28,
-            categoryPercentage: 0.6,
-            barPercentage: 0.6
+            label: 'Likes promedio',
+            data: likesCand.map(d=>d.likes),
+            backgroundColor: espectroOn ? colorsBySpectro(likesCand, likesCand.map(d=>d.espectro))
+                                         : colorsByCandidate(likesCand.length),
+            ...barCfg
           }]
         },
-        options: {
-          responsive:true, maintainAspectRatio:false, animation:false,
-          plugins:{
-            legend:{ display:false },
-            tooltip:{ callbacks:{ label: (ctx)=> fmt(ctx.raw) + ' interacciones' } }
-          },
-          scales:{ x:{ ticks:{ autoSkip:false } }, y:{ title:{ display:true, text:'Interacciones' } } }
-        }
-      });
+        options: baseOpts
+      },
+      'likes'
+    );
 
-    } else {
-      // general/apilado por semana
-      const nadaFiltrado = espsSel.length === 0;
-      canvasStack.style.height = '380px';
-
-      const stackDatasets = (winSeries.espectros || []).map(esp => ({
-        label: esp,
-        data: (winSeries.semanas || []).map(sem => {
-          const cell = (winSeries.values || []).find(v => v.espectro===esp && v.semana===sem);
-          return cell ? (cell.nd? 0 : cell.interacciones) : 0;
-        }),
-        backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)',
-        borderColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.55)',
-        borderWidth: nadaFiltrado ? 1 : 0,
-        maxBarThickness: 28
-      }));
-
-      new Chart(ctxStack, {
+    // Comentarios
+    drawChart(
+      document.getElementById('comentPorCandidato').getContext('2d'),
+      {
         type: 'bar',
-        data: { labels: (winSeries.semanas || []).map((s,i)=>'S'+(i+1)), datasets: stackDatasets },
-        options: {
-          responsive:true, maintainAspectRatio:false, animation:false,
-          plugins:{ 
-            legend:{ position:'top' },
-            tooltip: {
-              callbacks: {
-                title: (items)=> {
-                  const idx = items?.[0]?.dataIndex ?? 0;
-                  const s = winSeries.semanas?.[idx] || '';
-                  return 'Semana: ' + s;
-                },
-                label: (ctx) => {
-                  const esp = ctx.dataset.label;
-                  const idx = ctx.dataIndex;
-                  const sem = winSeries.semanas?.[idx];
-                  const cell = (winSeries.values || []).find(v => v.espectro===esp && v.semana===sem);
-                  const ganador = cell?.nd ? 'ND' : (cell && cell.interacciones>0 ? 'Ganador: '+(cell.candidato||'') : 'Sin ganador');
-                  const valor = ' • ' + fmt(ctx.raw) + ' interacciones';
-                  return `${ganador}${valor}`;
-                }
-              }
-            }
-          },
-          scales:{ x:{ stacked:true }, y:{ stacked:true, title:{ display:true, text:'Interacciones (ganador por espectro)' } } }
-        }
-      });
-    }
+        data: {
+          labels: comCand.map(d=>d.candidato),
+          datasets: [{
+            label: 'Comentarios promedio',
+            data: comCand.map(d=>d.comentarios),
+            backgroundColor: espectroOn ? colorsBySpectro(comCand, comCand.map(d=>d.espectro))
+                                         : colorsByCandidate(comCand.length),
+            ...barCfg
+          }]
+        },
+        options: baseOpts
+      },
+      'coment'
+    );
 
-    // ===== Heatmap general (Candidato × Red)
-    const hm = document.getElementById('heatmap');
-    if(!matrix.values.length) {
-      hm.innerHTML = '<em>Sin datos.</em>';
-    } else {
-      const rows = matrix.rows, cols = matrix.cols, vals = matrix.values;
-      const max = Math.max(...vals.map(v=>v.valor||0));
-      let html = '<table><thead><tr><th></th>';
-      for (const col of cols) html += `<th>${col}</th>`;
-      html += '</tr></thead><tbody>';
-      for (const r of rows) {
-        html += `<tr><th>${r}</th>`;
-        for (const c of cols) {
-          const item = vals.find(v => v.candidato===r && v.red===c);
-          const v = item ? (item.valor||0) : 0;
-          const pct = max? (v/max) : 0;
-          const bg = `rgba(59,130,246,${0.08 + 0.6*pct})`;
-          const disp = item && item.nd ? 'ND' : (v ? new Intl.NumberFormat('es-ES').format(Math.round(v)) : '');
-          html += `<td class="cell" style="background:${bg}">${disp}</td>`;
-        }
-        html += '</tr>';
-      }
-      html += '</tbody></table>';
-      hm.innerHTML = '<div class="heatwrap">' + html + '</div>';
-    }
-
-    // Heatmap semanal (Candidato × Semana) con selector de métrica
-    await redibujarSemanal();
-  }
-
-  async function redibujarSemanal(){
-    const metric = document.getElementById('selMetric').value;
-    const params = new URLSearchParams();
-    const reds = qsmulti('red'), esps = qsmulti('espectro');
-    if(reds.length) params.set('red', reds.join(','));
-    if(qs('semana')) params.set('semana', qs('semana'));
-    if(esps.length) params.set('espectro', esps.join(','));
-    params.set('metric', metric);
-
-    const m = await fetch('/api/heatmap-semanal?'+params.toString()).then(r=>r.json());
-    const el = document.getElementById('heatmapSemanal');
-    if(!m.values.length){
-      el.innerHTML = '<em>Sin datos para los filtros/semana.</em>';
-      return;
-    }
-    const rows = m.rows, cols = m.cols, vals = m.values;
-    const max = Math.max(...vals.map(v=>v.valor||0));
-
-    // encabezados cortos para evitar superposición (S1, S2, ...)
-    const shortCols = cols.map((c,i)=> 'S'+(i+1));
-
-    let html = '<table><thead><tr><th></th>';
-    for (const sc of shortCols) html += `<th>${sc}</th>`;
-    html += '</tr></thead><tbody>';
-    for (let i=0;i<rows.length;i++){
-      const r = rows[i];
-      html += `<tr><th>${r}</th>`;
-      for (let j=0;j<cols.length;j++){
-        const c = cols[j];
-        const item = vals.find(v => v.candidato===r && v.semana===c);
-        const v = item ? (item.valor||0) : 0;
-        const pct = max? (v/max) : 0;
-        const bg = `rgba(234,88,12,${0.07 + 0.6*pct})`; // naranja suave
-        const disp = item && item.nd ? 'ND' : (v ? new Intl.NumberFormat('es-ES').format(Math.round(v)) : '');
-        html += `<td class="cell" style="background:${bg}">${disp}</td>`;
-      }
-      html += '</tr>';
-    }
-    html += '</tbody></table>';
-    el.innerHTML = '<div class="heatwrap">' + html + '</div>';
-  }
-
-  draw();
-</script>
-</body>
-</html>
-"""
-    return render_template_string(
-        template,
-        total_filas=total_filas,
-        total_likes=total_likes,
-        total_coment=total_coment,
-        n_candidatos=n_candidatos,
-        redes=redes,
-        semanas=semanas,
-        espectros=espectros,
-        espectro_colors=espectro_colors,
-    )
-
-# ================== APIs ==================
-
-@app.route("/api/likes-por-candidato")
-def api_likes_por_candidato():
-    df = aplicar_filtros(load_all())
-    if df.empty: return jsonify([])
-    g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO], as_index=False)[COL_LIKES]
-           .mean()
-           .rename(columns={COL_LIKES:"likes"})
-           .sort_values("likes", ascending=False))
-    out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO],
-            "likes": float(0 if pd.isna(r["likes"]) else r["likes"])}
-           for _, r in g.iterrows()]
-    return jsonify(out)
-
-@app.route("/api/comentarios-por-candidato")
-def api_comentarios_por_candidato():
-    df = aplicar_filtros(load_all())
-    if df.empty: return jsonify([])
-    g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO], as_index=False)[COL_COMENT]
-           .mean()
-           .rename(columns={COL_COMENT:"comentarios"})
-           .sort_values("comentarios", ascending=False))
-    out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO],
-            "comentarios": float(0 if pd.isna(r["comentarios"]) else r["comentarios"])}
-           for _, r in g.iterrows()]
-    return jsonify(out)
-
-@app.route("/api/candidatos-todos")
-def api_candidatos_todos():
-    df = aplicar_filtros(load_all())
-    if df.empty: return jsonify([])
-    g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO], as_index=False)[COL_LIKES]
-           .mean()
-           .rename(columns={COL_LIKES:"likes"})
-           .sort_values("likes", ascending=False))
-    out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO],
-            "likes": float(0 if pd.isna(r["likes"]) else r["likes"])}
-           for _, r in g.iterrows()]
-    return jsonify(out)
-
-@app.route("/api/ganador-semanal")
-def api_ganador_semanal():
-    """
-    Devuelve SIEMPRE la grilla completa (Semana × Espectro).
-    Si no hay datos para una combinación, marca nd=True (no data).
-    """
-    full = load_all()
-    filtered = aplicar_filtros(full)
-
-    semanas_dom  = sorted(full["Semana"].unique().tolist()) if not (request.args.get("semana") or "").strip() else \
-                   sorted(filtered["Semana"].unique().tolist())
-    espectros_q  = (request.args.get("espectro") or "").strip()
-    espectros_dom = sorted(full[COL_ESPECTRO].unique().tolist()) if not espectros_q else \
-                    sorted(_parse_multi(espectros_q))
-
-    out = []
-    for sem in semanas_dom:
-        for esp in espectros_dom:
-            df_se = filtered[(filtered["Semana"] == sem) & (filtered[COL_ESPECTRO] == esp)]
-            if df_se.empty:
-                out.append({"semana": sem, "espectro": esp, "candidato": None, "interacciones": 0.0, "nd": True})
-            else:
-                g = df_se.groupby(COL_CANDIDATO, as_index=False)["Interacciones"].mean()
-                row = g.loc[g["Interacciones"].idxmax()]
-                out.append({
-                    "semana": sem, "espectro": esp, "candidato": row[COL_CANDIDATO],
-                    "interacciones": float(row["Interacciones"]), "nd": False
-                })
-    out.sort(key=lambda x: (x["semana"], x["espectro"]))
-    return jsonify(out)
-
-@app.route("/api/ganador-semanal-series")
-def api_ganador_semanal_series():
-    """
-    Para la gráfica apilada: por cada Semana y Espectro, el valor del ganador (Interacciones).
-    """
-    full = load_all()
-    filtered = aplicar_filtros(full)
-    if filtered.empty:
-        return jsonify({"semanas": [], "espectros": [], "values": []})
-
-    semanas = sorted(filtered["Semana"].unique().tolist())
-    espectros = sorted(filtered[COL_ESPECTRO].unique().tolist())
-
-    values = []
-    for sem in semanas:
-        for esp in espectros:
-            df_se = filtered[(filtered["Semana"] == sem) & (filtered[COL_ESPECTRO] == esp)]
-            if df_se.empty:
-                values.append({"semana": sem, "espectro": esp, "interacciones": 0.0, "nd": True})
-            else:
-                g = df_se.groupby(COL_CANDIDATO, as_index=False)["Interacciones"].mean()
-                row = g.loc[g["Interacciones"].idxmax()]
-                values.append({"semana": sem, "espectro": esp, "interacciones": float(row["Interacciones"]), "nd": False})
-
-    return jsonify({"semanas": semanas, "espectros": espectros, "values": values})
-
-@app.route("/api/heatmap")
-def api_heatmap():
-    """Heatmap general (Candidato × Red) por Interacciones promedio."""
-    df = aplicar_filtros(load_all())
-    if df.empty:
-        return jsonify({"rows": [], "cols": [], "values": []})
-    rows = sorted(df[COL_CANDIDATO].unique().tolist())
-    cols = sorted(df[COL_RED].unique().tolist())
-    g = df.groupby([COL_CANDIDATO, COL_RED], as_index=False)["Interacciones"].mean()
-    values = []
-    for r in rows:
-        for c in cols:
-            sub = g[(g[COL_CANDIDATO]==r) & (g[COL_RED]==c)]
-            if sub.empty or pd.isna(sub["Interacciones"].iloc[0]):
-                values.append({"candidato": r, "red": c, "valor": 0, "nd": True})
-            else:
-                v = float(sub["Interacciones"].iloc[0])
-                values.append({"candidato": r, "red": c, "valor": v, "nd": False})
-    return jsonify({"rows": rows, "cols": cols, "values": values})
-
-@app.route("/api/heatmap-semanal")
-def api_heatmap_semanal():
-    """
-    Heatmap semanal (Candidato × Semana) con métrica:
-    - metric=interacciones | likes | comentarios
-    Respeta filtros de red/espectro/semana.
-    """
-    metric = (request.args.get("metric") or "interacciones").lower()
-    df = aplicar_filtros(load_all())
-    if df.empty:
-        return jsonify({"rows": [], "cols": [], "values": []})
-
-    if metric == "likes":
-        col = COL_LIKES
-    elif metric == "comentarios":
-        col = COL_COMENT
-    else:
-        col = "Interacciones"
-
-    rows = sorted(df[COL_CANDIDATO].unique().tolist())
-    cols = sorted(df["Semana"].unique().tolist())
-    g = df.groupby([COL_CANDIDATO, "Semana"], as_index=False)[col].mean()
-
-    values = []
-    for r in rows:
-        for c in cols:
-            sub = g[(g[COL_CANDIDATO]==r) & (g["Semana"]==c)]
-            if sub.empty or pd.isna(sub[col].iloc[0]):
-                values.append({"candidato": r, "semana": c, "valor": 0, "nd": True})
-            else:
-                values.append({"candidato": r, "semana": c, "valor": float(sub[col].iloc[0]), "nd": False})
-    return jsonify({"rows": rows, "cols": cols, "values": values})
-
-# ---- Run local (no usado en Render) ----
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    // Todos (likes)
+    drawChart(
+      document.getElementById('candidatosTodos').getContext('2d'),
+      {
+        type: 'bar',
+        data: {
+         
