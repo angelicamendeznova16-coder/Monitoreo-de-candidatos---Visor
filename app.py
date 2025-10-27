@@ -283,20 +283,18 @@ def index():
 
   // ========== Bootstrap inicial ==========
   async function bootstrap(){
-    // Obtener listas + KPIs ligeros
     const boot = await fetch('/api/bootstrap').then(r=>r.json());
 
     REDES = boot.redes || [];
     SEMANAS = boot.semanas || [];
     ESPECTROS = boot.espectros || [];
 
-    // Rellenar KPIs
+    // KPIs
     document.getElementById('kpiFilas').innerText = (boot.kpis.filas || 0).toLocaleString('es-ES');
     document.getElementById('kpiLikes').innerText = (boot.kpis.likes || 0).toLocaleString('es-ES');
     document.getElementById('kpiCom').innerText   = (boot.kpis.coment || 0).toLocaleString('es-ES');
     document.getElementById('kpiCand').innerText  = (boot.kpis.candidatos || 0).toLocaleString('es-ES');
 
-    // Rellenar selects/chips
     // Semana
     const selSemana = document.getElementById('selSemana');
     selSemana.innerHTML = '<option value="">(todas)</option>' + SEMANAS.map(s=>`<option value="${s}">${s}</option>`).join('');
@@ -582,7 +580,8 @@ def index():
 </body>
 </html>
 '''
-    return render_template_string(template)
+    # 🔧 FIX: pasar espectro_colors al template (evita 'Undefined' en tojson)
+    return render_template_string(template, espectro_colors=espectro_colors)
 
 # ================== APIs ==================
 @app.route("/api/bootstrap")
@@ -691,7 +690,6 @@ def api_ganador_semanal_series():
             else:
                 g = df_se.groupby(COL_CANDIDATO, as_index=False)["Interacciones"].mean()
                 row = g.loc[g["Interacciones"].idxmax()]
-                # Para tooltips con "ganador", devolvemos también el candidato (opcional)
                 values.append({"semana": sem, "espectro": esp, "interacciones": float(row["Interacciones"]), "nd": False, "candidato": row[COL_CANDIDATO]})
     return jsonify({"semanas": semanas, "espectros": espectros, "values": values})
 
