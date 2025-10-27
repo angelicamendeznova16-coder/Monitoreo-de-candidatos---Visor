@@ -4,22 +4,21 @@ import pandas as pd
 from flask import Flask, jsonify, request, render_template_string
 from functools import lru_cache
 
-# === Ruta del Excel (en la raíz del repo) ===
+# === Ruta del Excel ===
 EXCEL_PATH = os.environ.get("EXCEL_PATH", "Monitoreo_de_candidatos_largo.xlsx")
 
-# === Nombres de columnas (según tu archivo) ===
+# === Columnas ===
 COL_ESPECTRO   = "Espectro"
 COL_CANDIDATO  = "Candidato"
 COL_RED        = "Red Social"
 COL_LIKES      = "Promedio likes x semana"
-COL_MAXLIKES   = "Publicación con más likes"
+COL_MAXLIKES   = "Publicición con más likes" if "Publicición con más likes" in [] else "Publicación con más likes"
 COL_TEMA       = "Tema"
 COL_COMENT     = "Promedio comentarios  por publicación"
 
-# ---------- CARGA Y LIMPIEZA (cache para velocidad) ----------
+# ---------- CARGA (cache para velocidad) ----------
 @lru_cache(maxsize=1)
 def _cache_key():
-    # si cambias EXCEL_PATH en variables de entorno y redeploy, se renueva
     return os.path.abspath(EXCEL_PATH)
 
 @lru_cache(maxsize=1)
@@ -34,14 +33,11 @@ def _load_all_cached(_key):
         frames.append(df)
 
     if not frames:
-        return pd.DataFrame(columns=[
-            COL_ESPECTRO, COL_CANDIDATO, COL_RED, COL_LIKES,
-            COL_MAXLIKES, COL_TEMA, COL_COMENT, "Semana"
-        ])
+        return pd.DataFrame(columns=[COL_ESPECTRO, COL_CANDIDATO, COL_RED, COL_LIKES, COL_MAXLIKES, COL_TEMA, COL_COMENT, "Semana"])
 
     df = pd.concat(frames, ignore_index=True)
 
-    # Tipos
+    # tipos
     for c in [COL_LIKES, COL_MAXLIKES, COL_COMENT]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -49,7 +45,7 @@ def _load_all_cached(_key):
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
 
-    # Interacciones = likes + comentarios (NaN se vuelve 0 SOLO para esta suma)
+    # interacciones = likes + comentarios (NaN -> 0 solo para esta suma)
     df["Interacciones"] = df[COL_LIKES].fillna(0) + df[COL_COMENT].fillna(0)
     return df
 
@@ -82,7 +78,7 @@ def index():
     total_coment  = int(df[COL_COMENT].fillna(0).sum()) if COL_COMENT in df else 0
     n_candidatos  = df[COL_CANDIDATO].nunique() if not df.empty else 0
 
-    # Paleta por espectro (colores suaves)
+    # colores por espectro
     espectro_colors = {
         "Centro":    "rgba(16,185,129,0.35)",   # verde claro
         "Derecha":   "rgba(59,130,246,0.35)",   # azul claro
@@ -106,21 +102,18 @@ def index():
     .kpi {{ font-size:13px; color:#6b7280; text-transform:uppercase; letter-spacing:.5px; }}
     .val {{ font-size:32px; font-weight:800; margin-top:6px; }}
     .grid3 {{ display:grid; grid-template-columns: repeat(3, 1fr); gap:20px; }}
-    .grid2 {{ display:grid; grid-template-columns: repeat(2, 1fr); gap:20px; }}
-    .panel {{ background:#fff; border-radius:12px; padding:16px; box-shadow:0 6px 16px rgba(0,0,0,.06); overflow: visible; }}
+    .panel {{ background:#fff; border-radius:12px; padding:16px; box-shadow:0 6px 16px rgba(0,0,0,.06); overflow:auto; max-height:80vh; }}
     .filters {{ display:flex; gap:12px; align-items:center; margin: 8px 0 16px; flex-wrap: wrap; }}
     select, button {{ padding:8px 10px; border-radius:8px; border:1px solid #e5e7eb; background:#fff; }}
     table {{ width:100%; border-collapse:collapse; }}
     th, td {{ padding:8px 10px; border-bottom:1px solid #e5e7eb; text-align:left; }}
     .cell {{ text-align:center; }}
-    /* asegura que el canvas pueda crecer en alto */
     .panel canvas {{ width: 100% !important; }}
     #heatmap {{ overflow:auto; }}
     #heatmap table {{ table-layout: fixed; }}
     #heatmap th, #heatmap td {{ white-space: nowrap; }}
     @media (max-width: 1200px) {{
       .grid3 {{ grid-template-columns: 1fr; }}
-      .grid2 {{ grid-template-columns: 1fr; }}
       .cards {{ grid-template-columns: 1fr 1fr; }}
     }}
   </style>
@@ -139,11 +132,11 @@ def index():
   <div class="panel">
     <div class="filters">
       <label>Red:</label>
-      <select id="selRed"><option value="">(todas)</option>{"".join(f'<option value="{{r}}">{{r}}</option>' for r in redes)}</select>
+      <select id="selRed"><option value="">(todas)</option>{"".join(f'<option value="{r}">{r}</option>' for r in redes)}</select>
       <label>Semana:</label>
-      <select id="selSemana"><option value="">(todas)</option>{"".join(f'<option value="{{s}}">{{s}}</option>' for s in semanas)}</select>
+      <select id="selSemana"><option value="">(todas)</option>{"".join(f'<option value="{s}">{s}</option>' for s in semanas)}</select>
       <label>Espectro:</label>
-      <select id="selEspectro"><option value="">(todos)</option>{"".join(f'<option value="{{e}}">{{e}}</option>' for e in espectros)}</select>
+      <select id="selEspectro"><option value="">(todos)</option>{"".join(f'<option value="{e}">{e}</option>' for e in espectros)}</select>
       <button onclick="aplicar()">Aplicar</button>
       <button onclick="limpiar()">Limpiar</button>
     </div>
@@ -175,11 +168,11 @@ def index():
   </div>
 
 <script>
-  // --- colores por espectro desde el backend ---
-  const ESPECTRO_COLORS = {{"Centro":"{espectro_colors.get('Centro','rgba(16,185,129,0.35)')}",
-                            "Derecha":"{espectro_colors.get('Derecha','rgba(59,130,246,0.35)')}",
-                            "Izquierda":"{espectro_colors.get('Izquierda','rgba(245,158,11,0.35)')}" }};
-  // paleta para "general": cada candidato color distinto (rotamos)
+  // colores por espectro (inyectados desde backend)
+  const ESPECTRO_COLORS = {{"Centro":"{espectro_colors.get('Centro')}",
+                            "Derecha":"{espectro_colors.get('Derecha')}",
+                            "Izquierda":"{espectro_colors.get('Izquierda')}" }};
+  // paleta para "general"
   const PALETTE = [
     "rgba(99,102,241,0.35)","rgba(236,72,153,0.35)","rgba(34,197,94,0.35)","rgba(59,130,246,0.35)",
     "rgba(234,179,8,0.35)","rgba(244,114,182,0.35)","rgba(16,185,129,0.35)","rgba(251,113,133,0.35)",
@@ -202,14 +195,14 @@ def index():
   }}
   setSel('selRed', qs('red')); setSel('selSemana', qs('semana')); setSel('selEspectro', qs('espectro'));
 
-  // --- altura dinámica para que quepan TODOS los candidatos en móvil/desktop ---
-  function setDynamicHeight(canvasId, count, rowHeight = 28, padding = 140, minRows = 6) {{
+  // altura dinámica con tope (y el panel hace scroll si se excede)
+  function setDynamicHeight(canvasId, count, rowHeight = 28, padding = 140, minRows = 6, maxPx = 1000) {{
     const c = document.getElementById(canvasId);
     const rows = Math.max(count, minRows);
-    c.style.height = (rows * rowHeight + padding) + 'px';
+    const h = Math.min(rows * rowHeight + padding, maxPx);
+    c.style.height = h + 'px';
   }}
 
-  // helper colores
   function colorsBySpectro(arr, espectros) {{
     return arr.map((_,i)=> ESPECTRO_COLORS[espectros[i]] || "rgba(107,114,128,0.25)");
   }}
@@ -227,7 +220,6 @@ def index():
     const winners   = await fetch('/api/ganador-semanal?'+params.toString()).then(r=>r.json());
     const matrix    = await fetch('/api/heatmap?'+params.toString()).then(r=>r.json());
 
-    // ajustar altura antes de dibujar
     setDynamicHeight('likesPorCandidato', likesCand.length);
     setDynamicHeight('comentPorCandidato', comCand.length);
     setDynamicHeight('candidatosTodos',   todos.length);
@@ -295,20 +287,20 @@ def index():
       }}
     }});
 
-    // tabla de ganadores
+    // Ganadores
     const cont = document.getElementById('tablaGanadores');
     if(!winners.length) {{
       cont.innerHTML = '<em>Sin datos para los filtros seleccionados.</em>';
     }} else {{
       let html = '<table><thead><tr><th>Semana</th><th>Espectro</th><th>Candidato</th><th>Interacciones</th></tr></thead><tbody>';
       for (const w of winners) {{
-        html += `<tr><td>${{w.semana}}</td><td>${{w.espectro}}</td><td>${{w.candidato}}</td><td class="cell">${{Intl.NumberFormat('es-ES').format(w.interacciones)}}</td></tr>`;
+        html += `<tr><td>${{w.semana}}</td><td>${{w.espectro}}</td><td>${{w.candidato}}</td><td class="cell>${{Intl.NumberFormat('es-ES').format(w.interacciones)}}</td></tr>`;
       }}
       html += '</tbody></table>';
       cont.innerHTML = html;
     }}
 
-    // Heatmap simple con tabla coloreada
+    // Heatmap (tabla coloreada)
     const hm = document.getElementById('heatmap');
     if(!matrix.values.length) {{
       hm.innerHTML = '<em>Sin datos para los filtros seleccionados.</em>';
@@ -324,7 +316,7 @@ def index():
           const item = vals.find(v => v.candidato===r && v.red===c);
           const v = item ? (item.valor||0) : 0;
           const pct = max? (v/max) : 0;
-          const bg = `rgba(59,130,246,${{0.1 + 0.6*pct}})`; // azul con intensidad
+          const bg = `rgba(59,130,246,${{0.1 + 0.6*pct}})`;
           const disp = item && item.nd ? 'ND' : (v ? Intl.NumberFormat('es-ES').format(Math.round(v)) : '');
           html += `<td class="cell" style="background:${{bg}}">${{disp}}</td>`;
         }}
@@ -393,7 +385,6 @@ def api_ganador_semanal():
            for _, r in gan.iterrows()]
     return jsonify(out)
 
-# Heatmap candidato × red con Interacciones promedio
 @app.route("/api/heatmap")
 def api_heatmap():
     df = aplicar_filtros(load_all())
@@ -413,7 +404,7 @@ def api_heatmap():
                 values.append({"candidato": r, "red": c, "valor": v, "nd": False})
     return jsonify({"rows": rows, "cols": cols, "values": values})
 
-# ---- Run local (no usado en Render) ----
+# ---- run local ----
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
