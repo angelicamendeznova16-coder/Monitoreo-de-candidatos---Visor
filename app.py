@@ -2,7 +2,7 @@ import os, math
 import pandas as pd
 from flask import Flask, jsonify, request, render_template_string
 
-EXCEL_PATH = os.environ.get("EXCEL_PATH", os.path.join("data","Monitoreo_de_candidatos_largo.xlsx"))
+EXCEL_PATH = os.environ.get("EXCEL_PATH", "Monitoreo_de_candidatos_largo.xlsx")
 
 COL_ESPECTRO  = "Espectro"
 COL_CANDIDATO = "Candidato"
