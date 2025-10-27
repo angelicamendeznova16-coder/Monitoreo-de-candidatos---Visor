@@ -3,10 +3,10 @@ import pandas as pd
 from flask import Flask, jsonify, request, render_template_string
 from functools import lru_cache
 
-# === Ruta del Excel ===
+# === Ruta del Excel (ajústala si cambias nombre/carpeta) ===
 EXCEL_PATH = os.environ.get("EXCEL_PATH", "Monitoreo_de_candidatos_largo.xlsx")
 
-# === Columnas ===
+# === Columnas del Excel ===
 COL_ESPECTRO   = "Espectro"
 COL_CANDIDATO  = "Candidato"
 COL_RED        = "Red Social"
@@ -15,7 +15,7 @@ COL_MAXLIKES   = "Publicación con más likes"
 COL_TEMA       = "Tema"
 COL_COMENT     = "Promedio comentarios  por publicación"
 
-# ---------- CARGA + LIMPIEZA (cache) ----------
+# ---------- CARGA + LIMPIEZA (con cache) ----------
 @lru_cache(maxsize=1)
 def _cache_key():
     return os.path.abspath(EXCEL_PATH)
@@ -37,6 +37,7 @@ def _load_all_cached(_key):
 
     df = pd.concat(frames, ignore_index=True)
 
+    # Tipos
     for c in [COL_LIKES, COL_MAXLIKES, COL_COMENT]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -44,6 +45,7 @@ def _load_all_cached(_key):
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
 
+    # Interacciones = likes + comentarios (NaN->0 SOLO para esta suma)
     df["Interacciones"] = df[COL_LIKES].fillna(0) + df[COL_COMENT].fillna(0)
     return df
 
@@ -51,12 +53,19 @@ def load_all():
     return _load_all_cached(_cache_key())
 
 def _parse_multi(param_value: str):
+    """'A,B,C' -> ['A','B','C']  | '', None -> []"""
     if not param_value:
         return []
     parts = [p.strip() for p in param_value.split(",") if p.strip()]
-    return list(dict.fromkeys(parts))  # unique, keep order
+    return list(dict.fromkeys(parts))  # sin duplicados, preserva orden
 
 def aplicar_filtros(df):
+    """
+    Filtros:
+      red=R1,R2      (opcional, multi)
+      semana=S1      (opcional, única)
+      espectro=E1,E2 (opcional, multi)
+    """
     red_multi      = _parse_multi((request.args.get("red") or "").strip())
     semana         = (request.args.get("semana") or "").strip()
     espectro_multi = _parse_multi((request.args.get("espectro") or "").strip())
@@ -84,12 +93,12 @@ def index():
     n_candidatos  = df[COL_CANDIDATO].nunique() if not df.empty else 0
 
     espectro_colors = {
-        "Centro":    "rgba(16,185,129,0.55)",
-        "Derecha":   "rgba(59,130,246,0.55)",
-        "Izquierda": "rgba(245,158,11,0.55)",
+        "Centro":    "rgba(16,185,129,0.55)",   # verde
+        "Derecha":   "rgba(59,130,246,0.55)",   # azul
+        "Izquierda": "rgba(245,158,11,0.55)",   # naranja
     }
 
-    template = '''
+    template = r'''
 <!doctype html>
 <html lang="es">
 <head>
@@ -115,15 +124,15 @@ def index():
   table { width:100%; border-collapse:collapse; }
   th, td { padding:8px 10px; border-bottom:1px solid #e5e7eb; text-align:left; }
   .cell { text-align:center; }
-
-  /* tamaños razonables en desktop */
+  /* tamaños por defecto de gráficos (más razonables en desktop) */
   #likesPorCandidato, #comentPorCandidato, #candidatosTodos { height: 360px; }
   #ganadoresStack { height: 380px; }
 
-  /* Heatmaps */
+  /* Heatmaps: scroll horizontal; semanal con ancho mayor */
   .heatwrap{ overflow-x:auto; -webkit-overflow-scrolling: touch; }
   .heatwrap table{ min-width: 760px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
   .heatwrap th, .heatwrap td{ white-space: nowrap; font-size:12px; }
+  /* El semanal necesita aún más ancho + fuentes más chicas para evitar superposición en móvil */
   #heatmapSemanal .heatwrap table{ min-width: 1100px; }
   #heatmapSemanal .heatwrap th, #heatmapSemanal .heatwrap td{ font-size:11px; }
 
@@ -226,14 +235,14 @@ def index():
   const SEMANAS         = {{ semanas | tojson }};
   const ESPECTROS       = {{ espectros | tojson }};
 
-  // paleta para "general"
+  // paleta
   const PALETTE = [
     "rgba(99,102,241,0.55)","rgba(236,72,153,0.55)","rgba(34,197,94,0.55)","rgba(59,130,246,0.55)",
     "rgba(234,179,8,0.55)","rgba(244,114,182,0.55)","rgba(16,185,129,0.55)","rgba(251,113,133,0.55)",
     "rgba(96,165,250,0.55)","rgba(250,204,21,0.55)","rgba(147,197,253,0.55)","rgba(253,186,116,0.55)"
   ];
 
-  // --- registro global de charts (evitar "apilar" instancias) ---
+  // --- registro global de charts para evitar "gráficos apilados" ---
   const CH = { likes:null, coment:null, todos:null, winners:null };
   function drawChart(ctx, cfg, key){
     if (CH[key]) { try { CH[key].destroy(); } catch(e){} }
@@ -251,7 +260,11 @@ def index():
     const sel = new Set(qsmulti(qsParam));
     cont.innerHTML = items.map(v => {
       const checked = sel.has(v) ? 'checked' : '';
-      return '<label><input type="checkbox" name="'+qsParam+'" value="'+v+'" '+checked+' /><span>'+v+'</span></label>';
+      return `
+        <label>
+          <input type="checkbox" name="${qsParam}" value="${v}" ${checked} />
+          <span>${v}</span>
+        </label>`;
     }).join('');
   }
   function getChipValues(name){
@@ -390,11 +403,12 @@ def index():
     const fmt = (v) => new Intl.NumberFormat('es-ES').format(Math.round(v||0));
 
     if (espsSel.length === 1) {
+      // 1 espectro -> barras con NOMBRE DEL CANDIDATO en eje X
       const esp = espsSel[0];
       const w = winners.filter(x => x.espectro === esp);
       const labels = w.map(x => x.candidato || 'ND');
       const data   = w.map(x => x.nd ? 0 : x.interacciones);
-      const baseH = 340; const extra = Math.max(0, (labels.length - 8)) * 10;
+      const baseH = 340, extra = Math.max(0, (labels.length - 8)) * 10;
       canvasStack.style.height = (baseH + extra) + 'px';
 
       drawChart(ctxStack, {
@@ -423,6 +437,7 @@ def index():
       }, 'winners');
 
     } else {
+      // general/apilado por semana
       const nadaFiltrado = espsSel.length === 0;
       canvasStack.style.height = '380px';
 
@@ -459,7 +474,7 @@ def index():
                   const cell = (winSeries.values || []).find(v => v.espectro===esp && v.semana===sem);
                   const ganador = cell?.nd ? 'ND' : (cell && cell.interacciones>0 ? 'Ganador: '+(cell.candidato||'') : 'Sin ganador');
                   const valor = ' • ' + fmt(ctx.raw) + ' interacciones';
-                  return ganador + valor;
+                  return `${ganador}${valor}`;
                 }
               }
             }
@@ -477,17 +492,17 @@ def index():
       const rows = matrix.rows, cols = matrix.cols, vals = matrix.values;
       const max = Math.max(...vals.map(v=>v.valor||0));
       let html = '<table><thead><tr><th></th>';
-      for (const col of cols) html += '<th>'+col+'</th>';
+      for (const col of cols) html += `<th>${col}</th>`;
       html += '</tr></thead><tbody>';
       for (const r of rows) {
-        html += '<tr><th>'+r+'</th>';
+        html += `<tr><th>${r}</th>`;
         for (const c of cols) {
           const item = vals.find(v => v.candidato===r && v.red===c);
           const v = item ? (item.valor||0) : 0;
           const pct = max? (v/max) : 0;
-          const bg = 'rgba(59,130,246,'+(0.08 + 0.6*pct)+')';
+          const bg = `rgba(59,130,246,${0.08 + 0.6*pct})`;
           const disp = item && item.nd ? 'ND' : (v ? new Intl.NumberFormat('es-ES').format(Math.round(v)) : '');
-          html += '<td class="cell" style="background:'+bg+'">'+disp+'</td>';
+          html += `<td class="cell" style="background:${bg}">${disp}</td>`;
         }
         html += '</tr>';
       }
@@ -495,7 +510,7 @@ def index():
       hm.innerHTML = '<div class="heatwrap">' + html + '</div>';
     }
 
-    // Heatmap semanal (Candidato × Semana)
+    // Heatmap semanal (Candidato × Semana) con selector de métrica
     await redibujarSemanal();
   }
 
@@ -517,22 +532,23 @@ def index():
     const rows = m.rows, cols = m.cols, vals = m.values;
     const max = Math.max(...vals.map(v=>v.valor||0));
 
+    // encabezados cortos para evitar superposición (S1, S2, ...)
     const shortCols = cols.map((c,i)=> 'S'+(i+1));
 
     let html = '<table><thead><tr><th></th>';
-    for (const sc of shortCols) html += '<th>'+sc+'</th>';
+    for (const sc of shortCols) html += `<th>${sc}</th>`;
     html += '</tr></thead><tbody>';
     for (let i=0;i<rows.length;i++){
       const r = rows[i];
-      html += '<tr><th>'+r+'</th>';
+      html += `<tr><th>${r}</th>`;
       for (let j=0;j<cols.length;j++){
         const c = cols[j];
         const item = vals.find(v => v.candidato===r && v.semana===c);
         const v = item ? (item.valor||0) : 0;
         const pct = max? (v/max) : 0;
-        const bg = 'rgba(234,88,12,'+(0.07 + 0.6*pct)+')';
+        const bg = `rgba(234,88,12,${0.07 + 0.6*pct})`; // naranja suave
         const disp = item && item.nd ? 'ND' : (v ? new Intl.NumberFormat('es-ES').format(Math.round(v)) : '');
-        html += '<td class="cell" style="background:'+bg+'">'+disp+'</td>';
+        html += `<td class="cell" style="background:${bg}">${disp}</td>`;
       }
       html += '</tr>';
     }
@@ -600,6 +616,10 @@ def api_candidatos_todos():
 
 @app.route("/api/ganador-semanal")
 def api_ganador_semanal():
+    """
+    Devuelve SIEMPRE la grilla completa (Semana × Espectro).
+    Si no hay datos para una combinación, marca nd=True (no data).
+    """
     full = load_all()
     filtered = aplicar_filtros(full)
 
@@ -627,6 +647,9 @@ def api_ganador_semanal():
 
 @app.route("/api/ganador-semanal-series")
 def api_ganador_semanal_series():
+    """
+    Para la gráfica apilada: por cada Semana y Espectro, el valor del ganador (Interacciones).
+    """
     full = load_all()
     filtered = aplicar_filtros(full)
     if filtered.empty:
@@ -650,6 +673,7 @@ def api_ganador_semanal_series():
 
 @app.route("/api/heatmap")
 def api_heatmap():
+    """Heatmap general (Candidato × Red) por Interacciones promedio."""
     df = aplicar_filtros(load_all())
     if df.empty:
         return jsonify({"rows": [], "cols": [], "values": []})
@@ -669,6 +693,11 @@ def api_heatmap():
 
 @app.route("/api/heatmap-semanal")
 def api_heatmap_semanal():
+    """
+    Heatmap semanal (Candidato × Semana) con métrica:
+    - metric=interacciones | likes | comentarios
+    Respeta filtros de red/espectro/semana.
+    """
     metric = (request.args.get("metric") or "interacciones").lower()
     df = aplicar_filtros(load_all())
     if df.empty:
@@ -695,7 +724,7 @@ def api_heatmap_semanal():
                 values.append({"candidato": r, "semana": c, "valor": float(sub[col].iloc[0]), "nd": False})
     return jsonify({"rows": rows, "cols": cols, "values": values})
 
-# ---- Run local ----
+# ---- Run local (no usado en Render) ----
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
