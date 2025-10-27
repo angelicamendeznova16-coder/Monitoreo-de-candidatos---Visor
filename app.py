@@ -92,14 +92,13 @@ def index():
     total_coment  = int(df[COL_COMENT].fillna(0).sum()) if COL_COMENT in df else 0
     n_candidatos  = df[COL_CANDIDATO].nunique() if not df.empty else 0
 
-    # Colores por espectro
     espectro_colors = {
         "Centro":    "rgba(16,185,129,0.55)",   # verde
         "Derecha":   "rgba(59,130,246,0.55)",   # azul
         "Izquierda": "rgba(245,158,11,0.55)",   # naranja
     }
 
-    html = f"""
+    template = """
 <!doctype html>
 <html lang="es">
 <head>
@@ -108,29 +107,29 @@ def index():
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-  body {{ font-family: system-ui,-apple-system,Segoe UI,Roboto; background:#f6f8fa; margin:0; padding:24px; }}
-  h1 {{ margin:0 0 6px; }}
-  .sub {{ color:#6b7280; margin-bottom:18px; font-weight:600 }}
-  .cards {{ display:grid; grid-template-columns: repeat(4, 1fr); gap:16px; margin: 14px 0 24px; }}
-  .card {{ background:#fff; border-radius:12px; padding:18px; box-shadow:0 6px 16px rgba(0,0,0,.06); }}
-  .kpi {{ font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:.5px; }}
-  .val {{ font-size:32px; font-weight:800; margin-top:6px; }}
-  .grid3 {{ display:grid; grid-template-columns: repeat(3, 1fr); gap:20px; }}
-  .panel {{ background:#fff; border-radius:12px; padding:16px; box-shadow:0 6px 16px rgba(0,0,0,.06); overflow:auto; max-height:80vh; }}
-  .filters {{ display:flex; gap:12px; align-items:center; margin:8px 0 16px; flex-wrap:wrap; }}
-  select, button {{ padding:8px 10px; border-radius:8px; border:1px solid #e5e7eb; background:#fff; }}
-  select[multiple] {{ min-width:180px; min-height:80px; }}
-  table {{ width:100%; border-collapse:collapse; }}
-  th, td {{ padding:8px 10px; border-bottom:1px solid #e5e7eb; text-align:left; }}
-  .cell {{ text-align:center; }}
-  .panel canvas {{ width: 100% !important; }}
-  #heatmap, #heatmapSemanal {{ overflow:auto; }}
-  #heatmap table, #heatmapSemanal table {{ table-layout: fixed; font-size: 12px; }}
-  #heatmap th, #heatmap td, #heatmapSemanal th, #heatmapSemanal td {{ white-space: nowrap; }}
-  @media (max-width:1200px) {{
-    .grid3 {{ grid-template-columns: 1fr; }}
-    .cards {{ grid-template-columns: 1fr 1fr; }}
-  }}
+  body { font-family: system-ui,-apple-system,Segoe UI,Roboto; background:#f6f8fa; margin:0; padding:24px; }
+  h1 { margin:0 0 6px; }
+  .sub { color:#6b7280; margin-bottom:18px; font-weight:600 }
+  .cards { display:grid; grid-template-columns: repeat(4, 1fr); gap:16px; margin: 14px 0 24px; }
+  .card { background:#fff; border-radius:12px; padding:18px; box-shadow:0 6px 16px rgba(0,0,0,.06); }
+  .kpi { font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:.5px; }
+  .val { font-size:32px; font-weight:800; margin-top:6px; }
+  .grid3 { display:grid; grid-template-columns: repeat(3, 1fr); gap:20px; }
+  .panel { background:#fff; border-radius:12px; padding:16px; box-shadow:0 6px 16px rgba(0,0,0,.06); overflow:auto; max-height:80vh; }
+  .filters { display:flex; gap:12px; align-items:center; margin:8px 0 16px; flex-wrap:wrap; }
+  select, button { padding:8px 10px; border-radius:8px; border:1px solid #e5e7eb; background:#fff; }
+  select[multiple] { min-width:180px; min-height:80px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { padding:8px 10px; border-bottom:1px solid #e5e7eb; text-align:left; }
+  .cell { text-align:center; }
+  .panel canvas { width: 100% !important; }
+  #heatmap, #heatmapSemanal { overflow:auto; }
+  #heatmap table, #heatmapSemanal table { table-layout: fixed; font-size: 12px; }
+  #heatmap th, #heatmap td, #heatmapSemanal th, #heatmapSemanal td { white-space: nowrap; }
+  @media (max-width:1200px) {
+    .grid3 { grid-template-columns: 1fr; }
+    .cards { grid-template-columns: 1fr 1fr; }
+  }
 </style>
 </head>
 <body>
@@ -138,25 +137,25 @@ def index():
   <div class="sub">Elaborado por Angélica Méndez</div>
 
   <div class="cards">
-    <div class="card"><div class="kpi">Filas analizadas</div><div class="val">{total_filas:,}</div></div>
-    <div class="card"><div class="kpi">Suma de likes promedio</div><div class="val">{total_likes:,}</div></div>
-    <div class="card"><div class="kpi">Suma de comentarios promedio</div><div class="val">{total_coment:,}</div></div>
-    <div class="card"><div class="kpi">Candidatos únicos</div><div class="val">{n_candidatos:,}</div></div>
+    <div class="card"><div class="kpi">Filas analizadas</div><div class="val">{{ total_filas | int }}</div></div>
+    <div class="card"><div class="kpi">Suma de likes promedio</div><div class="val">{{ total_likes | int }}</div></div>
+    <div class="card"><div class="kpi">Suma de comentarios promedio</div><div class="val">{{ total_coment | int }}</div></div>
+    <div class="card"><div class="kpi">Candidatos únicos</div><div class="val">{{ n_candidatos | int }}</div></div>
   </div>
 
   <div class="panel">
     <div class="filters">
       <label>Red(es):</label>
       <select id="selRed" multiple>
-        {"".join(f'<option value="{r}">{r}</option>' for r in redes)}
+        {% for r in redes %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
       </select>
 
       <label>Semana:</label>
-      <select id="selSemana"><option value="">(todas)</option>{"".join(f'<option value="{s}">{s}</option>' for s in semanas)}</select>
+      <select id="selSemana"><option value="">(todas)</option>{% for s in semanas %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select>
 
       <label>Espectro(s):</label>
       <select id="selEspectro" multiple>
-        {"".join(f'<option value="{e}">{e}</option>' for e in espectros)}
+        {% for e in espectros %}<option value="{{ e }}">{{ e }}</option>{% endfor %}
       </select>
 
       <button onclick="aplicar()">Aplicar</button>
@@ -206,10 +205,12 @@ def index():
   </div>
 
 <script>
-  // --- colores por espectro (inyectados desde backend) ---
-  const ESPECTRO_COLORS = {{"Centro":"{espectro_colors.get('Centro')}",
-                            "Derecha":"{espectro_colors.get('Derecha')}",
-                            "Izquierda":"{espectro_colors.get('Izquierda')}" }};
+  // --- datos desde backend (seguros con tojson) ---
+  const ESPECTRO_COLORS = {{ espectro_colors | tojson }};
+  const REDES           = {{ redes | tojson }};
+  const SEMANAS         = {{ semanas | tojson }};
+  const ESPECTROS       = {{ espectros | tojson }};
+
   // paleta para "general"
   const PALETTE = [
     "rgba(99,102,241,0.55)","rgba(236,72,153,0.55)","rgba(34,197,94,0.55)","rgba(59,130,246,0.55)",
@@ -218,20 +219,20 @@ def index():
   ];
 
   // ===== Helpers URL y selects (multi) =====
-  function qs(name){{ const u=new URL(window.location.href); return u.searchParams.get(name)||""; }}
-  function qsmulti(name){{ const v=qs(name); return v? v.split(",").map(s=>s.trim()).filter(Boolean) : []; }}
+  function qs(name){ const u=new URL(window.location.href); return u.searchParams.get(name)||""; }
+  function qsmulti(name){ const v=qs(name); return v? v.split(",").map(s=>s.trim()).filter(Boolean) : []; }
 
-  function setMultiSelect(id, values){{
+  function setMultiSelect(id, values){
     const el=document.getElementById(id);
     const set=new Set(values);
-    for(const opt of el.options){{ opt.selected = set.has(opt.value); }}
-  }}
-  function getMultiSelect(id){{
+    for(const opt of el.options){ opt.selected = set.has(opt.value); }
+  }
+  function getMultiSelect(id){
     const el=document.getElementById(id);
     return Array.from(el.selectedOptions).map(o=>o.value);
-  }}
+  }
 
-  function aplicar(){{
+  function aplicar(){
     const u=new URL(window.location.href);
     const reds = getMultiSelect('selRed');
     const esps = getMultiSelect('selEspectro');
@@ -242,12 +243,12 @@ def index():
     if(sem) u.searchParams.set('semana', sem); else u.searchParams.delete('semana');
 
     window.location.href = u.toString();
-  }}
-  function limpiar(){{
+  }
+  function limpiar(){
     const u=new URL(window.location.href);
     ['red','semana','espectro'].forEach(p=>u.searchParams.delete(p));
     window.location.href=u.toString();
-  }}
+  }
 
   // pre-selección desde querystring
   setMultiSelect('selRed', qsmulti('red'));
@@ -255,7 +256,7 @@ def index():
   document.getElementById('selSemana').value = qs('semana');
 
   // ===== Layout helpers =====
-  function setDynamicHeight(canvasId, count){{
+  function setDynamicHeight(canvasId, count){
     const c = document.getElementById(canvasId);
     const espectroFiltrado = qsmulti('espectro').length>0;
     const rowHeight = espectroFiltrado ? 20 : 26;   // más finitas si hay espectro
@@ -265,13 +266,13 @@ def index():
     const rows = Math.max(count, minRows);
     const h = Math.min(rows * rowHeight + padding, maxPx);
     c.style.height = h + 'px';
-  }}
-  function colorsBySpectro(arr, espectros) {{
+  }
+  function colorsBySpectro(arr, espectros) {
     return arr.map((_,i)=> ESPECTRO_COLORS[espectros[i]] || "rgba(107,114,128,0.35)");
-  }}
-  function colorsByCandidate(n) {{ return Array.from({{length:n}}, (_,i)=> PALETTE[i % PALETTE.length]); }}
+  }
+  function colorsByCandidate(n) { return Array.from({length:n}, (_,i)=> PALETTE[i % PALETTE.length]); }
 
-  async function draw(){{
+  async function draw(){
     const params = new URLSearchParams();
     const reds = qsmulti('red'), esps = qsmulti('espectro');
     if(reds.length) params.set('red', reds.join(','));
@@ -290,62 +291,62 @@ def index():
     setDynamicHeight('comentPorCandidato', comCand.length);
     setDynamicHeight('candidatosTodos',   todos.length);
 
-    const baseOpts = {{
+    const baseOpts = {
       indexAxis:'y',
       responsive:true,
       maintainAspectRatio:false,
       animation:false,
-      plugins: {{ legend: {{ display:false }} }},
-      scales: {{ y: {{ ticks: {{ autoSkip:false }} }}, x:{{ ticks:{{ maxTicksLimit: 8 }} }} }}
-    }};
+      plugins: { legend: { display:false } },
+      scales: { y: { ticks: { autoSkip:false } }, x:{ ticks:{ maxTicksLimit: 8 } } }
+    };
     const espectroOn = esps.length>0;
-    const barCfg = espectroOn ? {{ categoryPercentage:0.7, barPercentage:0.7, maxBarThickness:22 }}
-                              : {{ categoryPercentage:0.82, barPercentage:0.82, maxBarThickness:30 }};
+    const barCfg = espectroOn ? { categoryPercentage:0.7, barPercentage:0.7, maxBarThickness:22 }
+                              : { categoryPercentage:0.82, barPercentage:0.82, maxBarThickness:30 };
 
-    new Chart(document.getElementById('likesPorCandidato').getContext('2d'), {{
+    new Chart(document.getElementById('likesPorCandidato').getContext('2d'), {
       type: 'bar',
-      data: {{
+      data: {
         labels: likesCand.map(d=>d.candidato),
-        datasets: [{{
+        datasets: [{
           label: 'Likes promedio',
           data: likesCand.map(d=>d.likes),
           backgroundColor: espectroOn ? colorsBySpectro(likesCand, likesCand.map(d=>d.espectro))
                                        : colorsByCandidate(likesCand.length),
           ...barCfg
-        }}]
-      }},
+        }]
+      },
       options: baseOpts
-    }});
+    });
 
-    new Chart(document.getElementById('comentPorCandidato').getContext('2d'), {{
+    new Chart(document.getElementById('comentPorCandidato').getContext('2d'), {
       type: 'bar',
-      data: {{
+      data: {
         labels: comCand.map(d=>d.candidato),
-        datasets: [{{
+        datasets: [{
           label: 'Comentarios promedio',
           data: comCand.map(d=>d.comentarios),
           backgroundColor: espectroOn ? colorsBySpectro(comCand, comCand.map(d=>d.espectro))
                                        : colorsByCandidate(comCand.length),
           ...barCfg
-        }}]
-      }},
+        }]
+      },
       options: baseOpts
-    }});
+    });
 
-    new Chart(document.getElementById('candidatosTodos').getContext('2d'), {{
+    new Chart(document.getElementById('candidatosTodos').getContext('2d'), {
       type: 'bar',
-      data: {{
+      data: {
         labels: todos.map(d=>d.candidato),
-        datasets: [{{
+        datasets: [{
           label: 'Likes promedio',
           data: todos.map(d=>d.likes),
           backgroundColor: espectroOn ? colorsBySpectro(todos, todos.map(d=>d.espectro))
                                        : colorsByCandidate(todos.length),
           ...barCfg
-        }}]
-      }},
+        }]
+      },
       options: baseOpts
-    }});
+    });
 
     // ===== Ganadores: barras apiladas por semana (valor = interacciones del ganador de cada espectro) =====
     const ctxStack = document.getElementById('ganadoresStack').getContext('2d');
@@ -357,62 +358,62 @@ def index():
       }),
       backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)'
     }));
-    new Chart(ctxStack, {{
+    new Chart(ctxStack, {
       type: 'bar',
-      data: {{ labels: winSeries.semanas || [], datasets: stackDatasets }},
-      options: {{
+      data: { labels: winSeries.semanas || [], datasets: stackDatasets },
+      options: {
         responsive:true, maintainAspectRatio:false, animation:false,
-        plugins:{{ legend:{{ position:'top' }} }},
-        scales:{{ x:{{ stacked:true }}, y:{{ stacked:true }} }}
-      }}
-    }});
+        plugins:{ legend:{ position:'top' }},
+        scales:{ x:{ stacked:true }, y:{ stacked:true } }
+      }
+    });
 
     // Tabla de ganadores (lista completa semana × espectro)
     const cont = document.getElementById('tablaGanadores');
-    if(!winners.length) {{
+    if(!winners.length) {
       cont.innerHTML = '<em>Sin datos.</em>';
-    }} else {{
+    } else {
       let html = '<table><thead><tr><th>Semana</th><th>Espectro</th><th>Candidato</th><th>Interacciones</th></tr></thead><tbody>';
-      for (const w of winners) {{
+      for (const w of winners) {
         const disp = (w.nd ? 'ND' : w.candidato);
         const val  = (w.nd ? ''   : new Intl.NumberFormat('es-ES').format(Math.round(w.interacciones)));
-        html += `<tr><td>${{w.semana}}</td><td>${{w.espectro}}</td><td>${{disp}}</td><td class="cell">${{val}}</td></tr>`;
-      }}
+        html += `<tr><td>${w.semana}</td><td>${w.espectro}</td><td>${disp}</td><td class="cell">${val}</td></tr>`;
+      }
       html += '</tbody></table>';
       cont.innerHTML = html;
-    }}
+    }
 
     // Heatmap general (Candidato × Red)
     const hm = document.getElementById('heatmap');
-    if(!matrix.values.length) {{
+    if(!matrix.values.length) {
       hm.innerHTML = '<em>Sin datos.</em>';
-    }} else {{
+    } else {
       const rows = matrix.rows, cols = matrix.cols, vals = matrix.values;
       const max = Math.max(...vals.map(v=>v.valor||0));
       let html = '<table><thead><tr><th></th>';
-      for (const col of cols) html += `<th>${{col}}</th>`;
+      for (const col of cols) html += `<th>${col}</th>`;
       html += '</tr></thead><tbody>';
-      for (const r of rows) {{
-        html += `<tr><th>${{r}}</th>`;
-        for (const c of cols) {{
+      for (const r of rows) {
+        html += `<tr><th>${r}</th>`;
+        for (const c of cols) {
           const item = vals.find(v => v.candidato===r && v.red===c);
           const v = item ? (item.valor||0) : 0;
           const pct = max? (v/max) : 0;
-          const bg = `rgba(59,130,246,${{0.08 + 0.6*pct}})`;
+          const bg = `rgba(59,130,246,${0.08 + 0.6*pct})`;
           const disp = item && item.nd ? 'ND' : (v ? new Intl.NumberFormat('es-ES').format(Math.round(v)) : '');
-          html += `<td class="cell" style="background:${{bg}}">${{disp}}</td>`;
-        }}
+          html += `<td class="cell" style="background:${bg}">${disp}</td>`;
+        }
         html += '</tr>';
-      }}
+      }
       html += '</tbody></table>';
       hm.innerHTML = html;
-    }}
+    }
 
     // Heatmap semanal (Candidato × Semana) con selector de métrica
     await redibujarSemanal();
-  }}
+  }
 
-  async function redibujarSemanal(){{
+  async function redibujarSemanal(){
     const metric = document.getElementById('selMetric').value;
     const params = new URLSearchParams();
     const reds = qsmulti('red'), esps = qsmulti('espectro');
@@ -423,37 +424,47 @@ def index():
 
     const m = await fetch('/api/heatmap-semanal?'+params.toString()).then(r=>r.json());
     const el = document.getElementById('heatmapSemanal');
-    if(!m.values.length){{
+    if(!m.values.length){
       el.innerHTML = '<em>Sin datos para los filtros/semana.</em>';
       return;
-    }}
+    }
     const rows = m.rows, cols = m.cols, vals = m.values;
     const max = Math.max(...vals.map(v=>v.valor||0));
     let html = '<table><thead><tr><th></th>';
-    for (const col of cols) html += `<th>${{col}}</th>`;
+    for (const col of cols) html += `<th>${col}</th>`;
     html += '</tr></thead><tbody>';
-    for (const r of rows) {{
-      html += `<tr><th>${{r}}</th>`;
-      for (const c of cols) {{
+    for (const r of rows) {
+      html += `<tr><th>${r}</th>`;
+      for (const c of cols) {
         const item = vals.find(v => v.candidato===r && v.semana===c);
         const v = item ? (item.valor||0) : 0;
         const pct = max? (v/max) : 0;
-        const bg = `rgba(234,88,12,${{0.07 + 0.6*pct}})`; // naranja suave
+        const bg = `rgba(234,88,12,${0.07 + 0.6*pct})`; // naranja suave
         const disp = item && item.nd ? 'ND' : (v ? new Intl.NumberFormat('es-ES').format(Math.round(v)) : '');
-        html += `<td class="cell" style="background:${{bg}}">${{disp}}</td>`;
-      }}
+        html += `<td class="cell" style="background:${bg}">${disp}</td>`;
+      }
       html += '</tr>';
-    }}
+    }
     html += '</tbody></table>';
     el.innerHTML = html;
-  }}
+  }
 
   draw();
 </script>
 </body>
 </html>
 """
-    return render_template_string(html)
+    return render_template_string(
+        template,
+        total_filas=total_filas,
+        total_likes=total_likes,
+        total_coment=total_coment,
+        n_candidatos=n_candidatos,
+        redes=redes,
+        semanas=semanas,
+        espectros=espectros,
+        espectro_colors=espectro_colors,
+    )
 
 # ================== APIs ==================
 
