@@ -66,6 +66,13 @@ def _sanitize_numeric(series: pd.Series) -> pd.Series:
     s = s.str.replace(r"(?<=\d)\.(?=\d{3}(\D|$))", "", regex=True)  # quita puntos de miles si los hubiera
     return pd.to_numeric(s, errors="coerce")
 
+# Redondeo a 1 decimal
+def _r1(x):
+    try:
+        return round(float(x), 1)
+    except Exception:
+        return None
+
 # ---------- CARGA + LIMPIEZA (con cache) ----------
 @lru_cache(maxsize=1)
 def _cache_key():
@@ -493,7 +500,7 @@ def index():
         options:{ indexAxis:'y', responsive:false, maintainAspectRatio:false, animation:false,
           plugins:{ legend:{ display:false }, tooltip:{ callbacks:{
             title:(items)=>{const i=items[0].dataIndex; const sem=w[i]?.semana||''; return sem?`${sem}`:items[0].label; },
-            label:(ctx)=> fmt(ctx.raw)+' interacciones' } } },
+            label:(ctx)=> new Intl.NumberFormat('es-ES', {minimumFractionDigits:1, maximumFractionDigits:1}).format(ctx.raw)+' interacciones' } } },
           scales:{ x:{ ticks:{ maxTicksLimit:8 } }, y:{ ticks:{ autoSkip:false }, title:{ display:true, text:'Interacciones' } } } }
       }, 'winners');
     } else {
@@ -530,7 +537,7 @@ def index():
           const v = item ? (item.valor||0) : 0;
           const pct = max? (v/max) : 0;
           const bg = `rgba(59,130,246,${0.08 + 0.6*pct})`;
-          const disp = item && item.nd ? 'ND' : (v ? new Intl.NumberFormat('es-ES').format(Math.round(v)) : '');
+          const disp = item && item.nd ? 'ND' : (v ? new Intl.NumberFormat('es-ES', {minimumFractionDigits:1, maximumFractionDigits:1}).format(v) : '');
           html += `<td class="cell" style="background:${bg}">${disp}</td>`;
         }
         html += '</tr>';
@@ -585,7 +592,7 @@ def index():
         const v = item ? (item.valor||0) : 0;
         const pct = max? (v/max) : 0;
         const bg = `rgba(234,88,12,${0.07 + 0.6*pct})`;
-        const disp = item && item.nd ? 'ND' : (v ? new Intl.NumberFormat('es-ES').format(Math.round(v)) : '');
+        const disp = item && item.nd ? 'ND' : (v ? new Intl.NumberFormat('es-ES', {minimumFractionDigits:1, maximumFractionDigits:1}).format(v) : '');
         html += `<td class="cell" style="background:${bg}">${disp}</td>`;
       }
       html += '</tr>';
@@ -638,174 +645,9 @@ def api_likes_por_candidato():
            .agg({PROM_COL_LIKES: "mean", PROM_COL_ESPECTRO: lambda s: s.mode().iat[0] if not s.mode().empty else s.dropna().iat[0] if s.dropna().size else None})
            .rename(columns={PROM_COL_LIKES: "likes", PROM_COL_CANDIDATO: "candidato", PROM_COL_ESPECTRO: "espectro"})
            .sort_values("likes", ascending=False))
-    out = g.to_dict(orient="records")
+    out = [
+        {"candidato": r["candidato"], "espectro": r["espectro"], "likes": _r1(r["likes"])}
+        for _, r in g.iterrows()
+    ]
     return jsonify(out)
 
-@app.route("/api/comentarios-por_candidato")  # compat viejo
-def _deprecated():
-    return api_comentarios_por_candidato()
-
-@app.route("/api/comentarios-por-candidato")
-def api_comentarios_por_candidato():
-    df = aplicar_filtros_prom(load_promedios())
-    if df.empty or PROM_COL_COMENT not in df.columns:
-        return jsonify([])
-
-    x = df[[PROM_COL_CANDIDATO, PROM_COL_ESPECTRO, PROM_COL_COMENT]].copy()
-    x = x[pd.to_numeric(x[PROM_COL_COMENT], errors="coerce").notna()]
-    g = (x.groupby(PROM_COL_CANDIDATO, as_index=False)
-           .agg({PROM_COL_COMENT: "mean", PROM_COL_ESPECTRO: lambda s: s.mode().iat[0] if not s.mode().empty else s.dropna().iat[0] if s.dropna().size else None})
-           .rename(columns={PROM_COL_COMENT: "comentarios", PROM_COL_CANDIDATO: "candidato", PROM_COL_ESPECTRO: "espectro"})
-           .sort_values("comentarios", ascending=False))
-    out = g.to_dict(orient="records")
-    return jsonify(out)
-
-@app.route("/api/candidatos-todos")
-def api_candidatos_todos():
-    # Esta tarjeta ahora muestra "Candidatos por promedio de interacciones a la semana"
-    df = aplicar_filtros_prom(load_promedios())
-    if df.empty or PROM_COL_INTERSEM not in df.columns:
-        return jsonify([])
-
-    x = df[[PROM_COL_CANDIDATO, PROM_COL_ESPECTRO, PROM_COL_INTERSEM]].copy()
-    x = x[pd.to_numeric(x[PROM_COL_INTERSEM], errors="coerce").notna()]
-    g = (x.groupby(PROM_COL_CANDIDATO, as_index=False)
-           .agg({PROM_COL_INTERSEM: "mean", PROM_COL_ESPECTRO: lambda s: s.mode().iat[0] if not s.mode().empty else s.dropna().iat[0] if s.dropna().size else None})
-           .rename(columns={PROM_COL_INTERSEM: "interacciones", PROM_COL_CANDIDATO: "candidato", PROM_COL_ESPECTRO: "espectro"})
-           .sort_values("interacciones", ascending=False))
-
-    # Para no tocar el JS, devolvemos en la clave "likes" la métrica de interacciones promedio/semana
-    out = [{"candidato": r["candidato"], "espectro": r["espectro"], "likes": float(r["interacciones"])} for _, r in g.iterrows()]
-    return jsonify(out)
-
-# === Ganadores / Heatmaps (con hojas semanales, igual que antes) ===
-@app.route("/api/ganador-semanal")
-def api_ganador_semanal():
-    full = load_all()
-    filtered = aplicar_filtros(full)
-
-    if not (request.args.get("semana") or "").strip() and not filtered.empty:
-        semanas_presentes = full["Semana"].dropna().unique().tolist()
-    else:
-        semanas_presentes = filtered["Semana"].dropna().unique().tolist() if not filtered.empty else []
-    semanas_dom = [w for w in WEEK_ORDER if w in semanas_presentes] or sorted(semanas_presentes, key=_natural_key)
-
-    espectros_q  = (request.args.get("espectro") or "").strip()
-    espectros_dom = sorted(full[COL_ESPECTRO].unique().tolist()) if not espectros_q else \
-                    sorted(_parse_multi(espectros_q))
-
-    out = []
-    for sem in semanas_dom:
-        for esp in espectros_dom:
-            df_se = filtered[(filtered["Semana"] == sem) & (filtered[COL_ESPECTRO] == esp)]
-            if df_se.empty:
-                out.append({"semana": sem, "espectro": esp, "candidato": None, "interacciones": 0.0, "nd": True})
-            else:
-                g = df_se.groupby(COL_CANDIDATO, as_index=False)["Interacciones"].mean()
-                row = g.loc[g["Interacciones"].idxmax()]
-                out.append({
-                    "semana": sem, "espectro": esp, "candidato": row[COL_CANDIDATO],
-                    "interacciones": float(row["Interacciones"]), "nd": False
-                })
-    return jsonify(out)
-
-@app.route("/api/ganador-semanal-series")
-def api_ganador_semanal_series():
-    filtered = aplicar_filtros(load_all())
-    if filtered.empty:
-        return jsonify({"semanas": [], "espectros": [], "values": []})
-
-    semanas_presentes = filtered["Semana"].dropna().unique().tolist()
-    semanas = [w for w in WEEK_ORDER if w in semanas_presentes] or sorted(semanas_presentes, key=_natural_key)
-    espectros = sorted(filtered[COL_ESPECTRO].dropna().unique().tolist())
-
-    values = []
-    for sem in semanas:
-        for esp in espectros:
-            df_se = filtered[(filtered["Semana"] == sem) & (filtered[COL_ESPECTRO] == esp)]
-            if df_se.empty:
-                values.append({"semana": sem, "espectro": esp, "interacciones": 0.0, "nd": True})
-            else:
-                g = df_se.groupby(COL_CANDIDATO, as_index=False)["Interacciones"].mean()
-                row = g.loc[g["Interacciones"].idxmax()]
-                values.append({"semana": sem, "espectro": esp, "interacciones": float(row["Interacciones"]), "nd": False, "candidato": row[COL_CANDIDATO]})
-    return jsonify({"semanas": semanas, "espectros": espectros, "values": values})
-
-@app.route("/api/heatmap")
-def api_heatmap():
-    df = aplicar_filtros(load_all())
-    if df.empty:
-        return jsonify({"rows": [], "cols": [], "values": []})
-    rows = sorted(df[COL_CANDIDATO].unique().tolist())
-    cols = sorted(df[COL_RED].unique().tolist())
-    g = df.groupby([COL_CANDIDATO, COL_RED], as_index=False)["Interacciones"].mean()
-    values = []
-    for r in rows:
-        for c in cols:
-            sub = g[(g[COL_CANDIDATO]==r) & (g[COL_RED]==c)]
-            if sub.empty or pd.isna(sub["Interacciones"].iloc[0]):
-                values.append({"candidato": r, "red": c, "valor": 0, "nd": True})
-            else:
-                v = float(sub["Interacciones"].iloc[0])
-                values.append({"candidato": r, "red": c, "valor": v, "nd": False})
-    return jsonify({"rows": rows, "cols": cols, "values": values})
-
-@app.route("/api/heatmap-semanal")
-def api_heatmap_semanal():
-    metric = (request.args.get("metric") or "interacciones").lower()
-    df = aplicar_filtros(load_all())
-    if df.empty:
-        return jsonify({"rows": [], "cols": [], "values": []})
-
-    if metric == "likes":
-        col = COL_LIKES
-    elif metric == "comentarios":
-        col = COL_COMENT
-    else:
-        col = "Interacciones"
-
-    rows = sorted(df[COL_CANDIDATO].unique().tolist())
-    cols_raw = df["Semana"].dropna().unique().tolist()
-    cols = [w for w in WEEK_ORDER if w in cols_raw] or sorted(cols_raw, key=_natural_key)
-
-    g = df.groupby([COL_CANDIDATO, "Semana"], as_index=False)[col].mean()
-
-    values = []
-    for r in rows:
-        for c in cols:
-            sub = g[(g[COL_CANDIDATO]==r) & (g["Semana"]==c)]
-            if sub.empty or pd.isna(sub[col].iloc[0]):
-                values.append({"candidato": r, "semana": c, "valor": 0, "nd": True})
-            else:
-                values.append({"candidato": r, "semana": c, "valor": float(sub[col].iloc[0]), "nd": False})
-    return jsonify({"rows": rows, "cols": cols, "values": values})
-
-# === Endpoint opcional para revisar un candidato exacto (útil para comparar con tu Excel) ===
-@app.route("/api/check-candidato")
-def api_check_candidato():
-    name = (request.args.get("name") or "").strip()
-    value = (request.args.get("value") or "likes").strip().lower()
-    col = COL_LIKES if value.startswith("like") else COL_COMENT
-    if not name:
-        return jsonify({"error":"falta ?name="}), 400
-    df = aplicar_filtros(load_all())
-    df = df[df[COL_CANDIDATO]==name].copy()
-    if df.empty:
-        return jsonify({"error":"no hay filas para ese candidato con los filtros"}), 404
-    vals = df[col].dropna().tolist()
-    prom = float(pd.Series(vals).mean()) if vals else 0.0
-    return jsonify({
-        "candidato": name, "metric": value,
-        "n_filas": len(vals),
-        "muestras": vals[:100],  # para no reventar la respuesta
-        "promedio": prom
-    })
-
-# Health-check
-@app.route("/health")
-def health():
-    return "ok", 200
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
