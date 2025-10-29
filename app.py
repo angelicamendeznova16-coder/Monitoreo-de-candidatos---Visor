@@ -39,11 +39,10 @@ def _parse_multi(param_value: str):
     return list(dict.fromkeys(parts))
 
 def _valid_str(x):
-    """True si es string no vacío ni 'nan'/'none'."""
+    """True si es string no vacío ni 'nan'/'none'/'null'."""
     if pd.isna(x): return False
     s = str(x).strip().lower()
-    if s == "" or s in {"nan","none","null"}: return False
-    return True
+    return not (s == "" or s in {"nan", "none", "null"})
 
 # ---------- CARGA + LIMPIEZA (con cache) ----------
 @lru_cache(maxsize=1)
@@ -72,23 +71,22 @@ def _load_all_cached(_key):
 
     df = pd.concat(frames, ignore_index=True)
 
-    # --- Limpieza básica de strings —
-    # (NO convertir a str todo; solo normalizar si existe y filtrar vacíos reales)
+    # Limpieza de strings (sin forzar todo a str)
     for c in [COL_ESPECTRO, COL_CANDIDATO, COL_RED, COL_TEMA, "Semana"]:
         if c in df.columns:
             df[c] = df[c].apply(lambda x: None if not _valid_str(x) else str(x).strip())
 
-    # --- DEDUP: (Candidato, Red, Semana) para evitar inflar por repetidos
+    # DEDUP: (Candidato, Red, Semana)
     dedup_keys = [COL_CANDIDATO, COL_RED, "Semana"]
     if all(k in df.columns for k in dedup_keys):
         df = df.drop_duplicates(subset=dedup_keys, keep="first")
 
-    # --- Tipos numéricos (decimales con punto, sin miles)
+    # Tipos numéricos (decimales con punto)
     for c in [COL_LIKES, COL_MAXLIKES, COL_COMENT]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # Filtrar filas sin candidato/red/semana válidos
+    # Filtrar filas inválidas base
     df = df[df[COL_CANDIDATO].notna() & df[COL_RED].notna() & df["Semana"].notna()]
 
     # Interacciones simple (para heatmaps/ganadores)
@@ -121,25 +119,40 @@ def aplicar_filtros(df):
             df = df[mask]
     return df
 
-# === Agregación clave para las BARRAS ===
+# === Agregación robusta para las BARRAS ===
 def _agg_semana_then_candidato(df, value_col):
     """
-    Paso 1: promedio por Candidato×Semana (promedia entre redes de esa semana).
-    Paso 2: promedio entre semanas por Candidato (y mantenemos Espectro para color).
+    Paso A) (Candidato, Semana, Red) -> mean(value_col)    [colapsa duplicados por Tema/u otros]
+    Paso B) (Candidato, Semana) -> mean(value_col)         [promedio entre redes en esa semana]
+    Paso C) (Candidato, Espectro) -> mean(value_col)       [promedio entre semanas]
+    Espectro: modo por candidato en el df filtrado.
+    Incluye 'sanity cap' opcional (?nocap=1 para desactivarlo).
     """
-    # 1) Candidato×Semana (promedio entre redes)
-    by_week = (df.groupby([COL_CANDIDATO, "Semana"], as_index=False)[value_col]
-                 .mean())
-    # Traer Espectro (modo estable: el más frecuente por candidato en el df filtrado)
-    esp_map = (df.groupby(COL_CANDIDATO)[COL_ESPECTRO]
-                 .agg(lambda s: s.mode().iat[0] if not s.mode().empty else s.dropna().iat[0]
-                      if s.dropna().size else None)
-                 .to_dict())
-    by_week[COL_ESPECTRO] = by_week[COL_CANDIDATO].map(esp_map)
+    nocap = (request.args.get("nocap") or "").strip() == "1"
+    cap = 5_000_000  # ajusta si quieres
 
-    # 2) Promedio entre semanas por candidato
-    final = (by_week.groupby([COL_CANDIDATO, COL_ESPECTRO], as_index=False)[value_col]
-                   .mean())
+    x = df.copy()
+    x[value_col] = pd.to_numeric(x[value_col], errors="coerce")
+    x = x[x[value_col].notna()]
+    if not nocap:
+        x = x[x[value_col] <= cap]
+
+    # Paso A: 1 fila por (Candidato, Semana, Red)
+    needed = [COL_CANDIDATO, "Semana", COL_RED, value_col]
+    x = x[[c for c in needed if c in x.columns]]
+    by_cand_sem_red = x.groupby([COL_CANDIDATO, "Semana", COL_RED], as_index=False)[value_col].mean()
+
+    # Paso B: promedio entre redes en esa semana
+    by_cand_sem = by_cand_sem_red.groupby([COL_CANDIDATO, "Semana"], as_index=False)[value_col].mean()
+
+    # Espectro = modo por candidato en df filtrado
+    esp_map = (df.groupby(COL_CANDIDATO)[COL_ESPECTRO]
+                 .agg(lambda s: s.mode().iat[0] if not s.mode().empty else (s.dropna().iat[0] if s.dropna().size else None))
+                 .to_dict())
+    by_cand_sem[COL_ESPECTRO] = by_cand_sem[COL_CANDIDATO].map(esp_map)
+
+    # Paso C: promedio entre semanas por candidato
+    final = by_cand_sem.groupby([COL_CANDIDATO, COL_ESPECTRO], as_index=False)[value_col].mean()
     return final
 
 # ============== APP ==============
@@ -455,7 +468,7 @@ def index():
       'todos'
     );
 
-    // Ganadores (sin cambios de lógica)
+    // Ganadores (con etiquetas S{n}. Nombre si hay 1 espectro)
     const canvasStack = document.getElementById('ganadoresStack');
     const ctxStack = canvasStack.getContext('2d');
     const espsSel = qsmulti('espectro');
@@ -672,7 +685,7 @@ def api_bootstrap():
     }
     return jsonify({"redes": redes, "semanas": semanas, "meses": meses, "espectros": espectros, "kpis": kpis})
 
-# === BARRAS: usar agregación Semana→Candidato ===
+# === BARRAS (con pipeline A->B->C y 'nocap') ===
 @app.route("/api/likes-por-candidato")
 def api_likes_por_candidato():
     df = aplicar_filtros(load_all())
@@ -713,7 +726,7 @@ def api_candidatos_todos():
             "likes": float(r["likes"])} for _, r in g.iterrows()]
     return jsonify(out)
 
-# === RESTO sin cambios de lógica ===
+# === Resto (ganadores/heatmaps) ===
 @app.route("/api/ganador-semanal")
 def api_ganador_semanal():
     full = load_all()
@@ -815,7 +828,7 @@ def api_heatmap_semanal():
                 values.append({"candidato": r, "semana": c, "valor": float(sub[col].iloc[0]), "nd": False})
     return jsonify({"rows": rows, "cols": cols, "values": values})
 
-# ====== DIAGNÓSTICO (opcional) ======
+# ====== DIAGNÓSTICO ======
 @app.route("/api/debug-candidato")
 def api_debug_candidato():
     nombre = (request.args.get("candidato") or "").strip()
