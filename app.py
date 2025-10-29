@@ -57,7 +57,7 @@ def _sanitize_numeric(series: pd.Series) -> pd.Series:
     if series is None:
         return series
     s = series.astype(str).str.replace(r"[^\d\.\-eE]", "", regex=True)
-    s = s.str.replace(r"(?<=\d)\.(?=\d{3}(\D|$))", "", regex=True)  # quitar puntos de miles si los hubiera
+    s = s.str.replace(r"(?<=\d)\.(?=\d{3}(\D|$))", "", regex=True)  # quitar separadores de miles con punto
     return pd.to_numeric(s, errors="coerce")
 
 def _r1(x):
@@ -122,10 +122,12 @@ def load_all():
     return _load_all_cached(_cache_key())
 
 # ---------- Normalización robusta de SEMANA ----------
-# Acepta formatos: "Semana 3", "S-03", "SEMANA3", "23 Sep – 01  Oct", "23 sept. al 1 octubre", etc.
+# Acepta: "Semana 3", "S-03", "SEMANA3", "23 Sep – 01  Oct", "2Oct-8Oct", "9Oct-15Oct", "16Oct-22Oct", "23Oct-28Oct",
+# y también variantes con paréntesis: "2 Oct - 8 Oct (2Oct-8Oct)".
 _DASH_RX = re.compile(r"\s*[-–—]\s*", flags=re.IGNORECASE)
 _WORD_DASH_RX = re.compile(r"\b(a|al|hasta)\b", flags=re.IGNORECASE)
 DATE_TOKEN_RX = re.compile(r"(\d{1,2})\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\.]{3,})", flags=re.IGNORECASE)
+PARENS_RX = re.compile(r"\(.*?\)")
 
 def _norm_month_token(m: str) -> str:
     """Normaliza cualquier variante del mes a 'Sep' o 'Oct'."""
@@ -134,19 +136,24 @@ def _norm_month_token(m: str) -> str:
         return "Sep"
     if t.startswith("oct"):  # oct, octubre, oct.
         return "Oct"
-    return t.title()[:3]  # fallback (no debería usarse en tu caso)
+    return t.title()[:3]  # fallback
 
 def _extract_two_dates_anywhere(s: str):
     """
-    Busca dos tokens 'día + mes' en el texto y devuelve ((d1, M1), (d2, M2)) ya normalizados.
-    Si no hay dos fechas, devuelve None.
+    Busca dos tokens 'día + mes' (con o sin espacios) y devuelve ((d1, M1), (d2, M2)).
+    Soporta '2 Oct - 8 Oct', '2Oct-8Oct', '2oct al 8oct', etc.
     """
-    # Cambia conectores por guion
-    s1 = _WORD_DASH_RX.sub("-", s)
+    # Quitar paréntesis (e.g. '(2Oct-8Oct)')
+    s0 = PARENS_RX.sub("", s)
+    # Cambiar conectores por guion y normalizar cualquier guion a " - "
+    s1 = _WORD_DASH_RX.sub("-", s0)
     s1 = _DASH_RX.sub(" - ", s1)
 
     tokens = DATE_TOKEN_RX.findall(s1)
     if len(tokens) < 2:
+        # Intento adicional: detectar compactos pegados sin separadores visibles entre los dos rangos,
+        # p. ej. "16Oct-22Oct" ya lo captura DATE_TOKEN_RX (porque hay guion entre fechas).
+        # Si no, devolvemos None.
         return None
 
     (d1, m1), (d2, m2) = tokens[0], tokens[1]
@@ -161,10 +168,9 @@ def _extract_two_dates_anywhere(s: str):
 
 def _normalize_week_label(v: str) -> str:
     """
-    Soporta:
-      - 'Semana 3', 'SEMANA3', 'S-03' (cualquier variante con número) -> mapea con WEEK_MAP
-      - Rangos con cualquier conector/guion: '23 Sep – 01 Oct', '23 sept. al 1 octubre', etc.
-    Devuelve exactamente una de las etiquetas en WEEK_ORDER si corresponde; si no, retorna el texto normalizado.
+    - 'Semana N' -> etiqueta oficial por WEEK_MAP
+    - Rangos en casi cualquier formato ('2Oct-8Oct', '2 Oct - 8 Oct (2Oct-8Oct)', etc.) -> '2 Oct - 8 Oct'
+    Cuando el rango coincide con una etiqueta oficial, devuelve exactamente la oficial.
     """
     if not _valid_str(v):
         return None
@@ -176,7 +182,7 @@ def _normalize_week_label(v: str) -> str:
         return s
 
     # 2) 'Semana N' (normalizando espacios/case)
-    k = re.sub(r"\s+", " ", s).strip().title()  # 'semana   2' -> 'Semana 2'
+    k = re.sub(r"\s+", " ", s).strip().title()
     if k in WEEK_MAP:
         return WEEK_MAP[k]
 
@@ -193,13 +199,12 @@ def _normalize_week_label(v: str) -> str:
     if pair:
         (d1, m1), (d2, m2) = pair
         s_norm = f"{d1} {m1} - {d2} {m2}"
-        # Si coincide con alguna etiqueta oficial, devolver la oficial (garantiza igualdad exacta)
         for official in WEEK_ORDER:
             if s_norm == official:
                 return official
-        return s_norm  # al menos queda estandarizado
+        return s_norm  # estandarizado aunque no sea oficial (por si acaso)
 
-    # 5) Fallback: devolver original
+    # 5) Fallback
     return s
 
 # ---------- CARGA DE LA HOJA DE PROMEDIOS ----------
@@ -221,7 +226,7 @@ def _load_promedios_cached(_key):
         if c in df.columns:
             df[c] = df[c].apply(lambda x: None if not _valid_str(x) else str(x).strip())
 
-    # Normaliza 'Semana' (mapea 'Semana N' y estandariza cualquier rango)
+    # Normaliza 'Semana' (mapea 'Semana N' y estandariza cualquier rango, incluidos compactos y paréntesis)
     if PROM_COL_SEMANA in df.columns:
         df[PROM_COL_SEMANA] = df[PROM_COL_SEMANA].apply(_normalize_week_label)
 
@@ -546,7 +551,7 @@ def index():
       options: baseOpts
     }, 'todos');
 
-    // Ganadores (mantenemos como estaba)
+    // Ganadores
     const canvasStack = document.getElementById('ganadoresStack');
     const ctxStack = canvasStack.getContext('2d');
     const espsSel = qsmulti('espectro');
@@ -565,7 +570,7 @@ def index():
         options:{ indexAxis:'y', responsive:false, maintainAspectRatio:false, animation:false,
           plugins:{ legend:{ display:false }, tooltip:{ callbacks:{
             title:(items)=>{const i=items[0].dataIndex; const sem=w[i]?.semana||''; return sem?`${sem}`:items[0].label; },
-            label:(ctx)=> (Number(ctx.raw||0)).toLocaleString('es-ES', {minimumFractionDigits:1,maximumFractionDigits:1})+' interacciones' } } },
+            label:(ctx)=> (Number(ctx.raw||0)).toLocaleString('es-ES',{minimumFractionDigits:1,maximumFractionDigits:1})+' interacciones' } } },
           scales:{ x:{ ticks:{ maxTicksLimit:8, callback:(v)=> (Number(v||0)).toLocaleString('es-ES',{minimumFractionDigits:1,maximumFractionDigits:1}) } }, y:{ ticks:{ autoSkip:false }, title:{ display:true, text:'Interacciones' } } } }
       }, 'winners');
     } else {
