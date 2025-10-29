@@ -43,8 +43,8 @@ def _parse_multi(param_value: str):
 # ---------- CARGA + LIMPIEZA (con cache) ----------
 @lru_cache(maxsize=1)
 def _cache_key():
-    # Si quieres que se auto-refresque cuando cambia el archivo, puedes
-    # usar también el mtime:  (os.path.abspath(EXCEL_PATH), os.path.getmtime(EXCEL_PATH))
+    # Si quieres autorecarga por cambio de archivo, puedes usar también mtime:
+    # return (os.path.abspath(EXCEL_PATH), os.path.getmtime(EXCEL_PATH) if os.path.exists(EXCEL_PATH) else -1)
     return os.path.abspath(EXCEL_PATH)
 
 @lru_cache(maxsize=1)
@@ -328,8 +328,8 @@ def index():
 
     renderChips('chipsRed', REDES, 'red');
     renderChips('chipsEsp', ESPECTROS, 'espectro');
-    renderChips('chipsSemana', SEMANAS, 'semana');  // nuevo
-    renderChips('chipsMes', MESES, 'mes');          // nuevo
+    renderChips('chipsSemana', SEMANAS, 'semana');  // semanas bonitas
+    renderChips('chipsMes', MESES, 'mes');          // meses (Septiembre/Octubre)
 
     await drawAll();
   }
@@ -343,7 +343,7 @@ def index():
     if(esps.length) params.set('espectro', esps.join(','));
     if(weeks.length) params.set('semana', weeks.join(','));
     if(months.length) params.set('mes', months.join(','));
-    if(qs('semana') && !weeks.length) params.set('semana', qs('semana')); // por si llega como string
+    if(qs('semana') && !weeks.length) params.set('semana', qs('semana'));
 
     const [likesCand, comCand, todos, winners, winSeries, matrix] = await Promise.all([
       fetch('/api/likes-por-candidato?'+params.toString()).then(r=>r.json()),
@@ -442,8 +442,18 @@ def index():
 
     if (espsSel.length === 1) {
       const esp = espsSel[0];
-      const w = winners.filter(x => x.espectro === esp);
-      const labels = w.map(x => x.candidato || 'ND');
+      // ordenar por SEMANAS global
+      const w = winners
+        .filter(x => x.espectro === esp)
+        .sort((a,b) => SEMANAS.indexOf(a.semana) - SEMANAS.indexOf(b.semana));
+
+      // Etiquetas tipo "S{n}. Nombre"
+      const labels = w.map(x => {
+        const idx = SEMANAS.indexOf(x.semana);
+        const prefix = idx >= 0 ? `S${idx + 1}. ` : '';
+        return `${prefix}${x.candidato || 'ND'}`;
+      });
+
       const data   = w.map(x => x.nd ? 0 : x.interacciones);
 
       setDynamicHeight('ganadoresStack', labels.length);
@@ -470,14 +480,25 @@ def index():
           animation:false,
           plugins:{
             legend:{ display:false },
-            tooltip:{ callbacks:{ label: (ctx)=> fmt(ctx.raw) + ' interacciones' } }
+            tooltip:{ callbacks:{ 
+              // tooltip muestra también el rango de semana completo
+              title: (items) => {
+                const i = items[0].dataIndex;
+                const sem = w[i]?.semana || '';
+                return sem ? `${sem}` : items[0].label;
+              },
+              label: (ctx)=> fmt(ctx.raw) + ' interacciones' 
+            } }
           },
-          scales:{ x:{ ticks:{ maxTicksLimit: 8 } }, y:{ ticks:{ autoSkip:false }, title:{ display:true, text:'Interacciones' } } }
+          scales:{ 
+            x:{ ticks:{ maxTicksLimit: 8 } }, 
+            y:{ ticks:{ autoSkip:false }, title:{ display:true, text:'Interacciones' } } 
+          }
         }
       }, 'winners');
 
     } else {
-      // apilado por semana
+      // apilado por semana (multi espectro)
       setDynamicHeight('ganadoresStack', (qsmulti('espectro').length || 3) * (SEMANAS.length || 6));
 
       const stackDatasets = (winSeries.espectros || []).map(esp => ({
@@ -649,7 +670,7 @@ def api_likes_por_candidato():
            for _, r in g.iterrows()]
     return jsonify(out)
 
-@app.route("/api/comentarios-por_candidato")  # <-- compat: ruta anterior era con guion; mantenemos original abajo
+@app.route("/api/comentarios-por_candidato")  # compat viejo nombre
 def _deprecated():
     return api_comentarios_por_candidato()
 
