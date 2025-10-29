@@ -117,37 +117,37 @@ def aplicar_filtros(df):
             df = df[mask]
     return df
 
-# === Agregación robusta para las BARRAS (anti-inflación) ===
-def _median_across_weeks_pipeline(df, value_col):
+# === NUEVA LÓGICA ULTRA-CONSERVADORA PARA LAS BARRAS ===
+def _robust_score(df, value_col):
     """
-    Paso A) (Candidato, Semana, Red) -> mean(value)      [colapsa filas repetidas por Tema u otras]
-    Paso B) (Candidato, Semana) -> mean(valor)           [promedio entre redes en esa semana]
-    Paso C) (Candidato) -> median(valor semanal)         [mediana entre semanas = robusto a semanas atípicas]
-    También se descartan valores imposibles (> 5,000,000) por seguridad.
+    Dentro de cada semana:   MEDIANA entre TODAS las filas del candidato (ignorando Red/Tema).
+    Entre semanas:           MEDIANA otra vez.
+    Incluye cap de seguridad (> 5e6 descartado).
+    Resultado: un valor por (Candidato, Espectro).
     """
+    if df.empty:
+        return pd.DataFrame(columns=[COL_CANDIDATO, COL_ESPECTRO, value_col])
+
     cap = 5_000_000
+
     x = df.copy()
     x[value_col] = pd.to_numeric(x[value_col], errors="coerce")
     x = x[x[value_col].notna()]
     x = x[x[value_col] <= cap]
 
-    # Paso A: 1 fila por (Candidato, Semana, Red)
-    needed = [COL_CANDIDATO, "Semana", COL_RED, value_col]
-    x = x[[c for c in needed if c in x.columns]]
-    by_cand_sem_red = x.groupby([COL_CANDIDATO, "Semana", COL_RED], as_index=False)[value_col].mean()
+    # Paso 1: mediana por (Candidato, Semana) SIN importar la red/tema
+    week_med = (x.groupby([COL_CANDIDATO, "Semana"], as_index=False)[value_col]
+                  .median())
 
-    # Paso B: promedio entre redes en esa semana
-    by_cand_sem = by_cand_sem_red.groupby([COL_CANDIDATO, "Semana"], as_index=False)[value_col].mean()
-
-    # Espectro = modo por candidato en df filtrado
+    # Espectro estable por candidato (modo)
     esp_map = (df.groupby(COL_CANDIDATO)[COL_ESPECTRO]
                  .agg(lambda s: s.mode().iat[0] if not s.mode().empty else (s.dropna().iat[0] if s.dropna().size else None))
                  .to_dict())
-    by_cand_sem[COL_ESPECTRO] = by_cand_sem[COL_CANDIDATO].map(esp_map)
+    week_med[COL_ESPECTRO] = week_med[COL_CANDIDATO].map(esp_map)
 
-    # Paso C: mediana entre semanas por candidato (robusto)
-    final = (by_cand_sem.groupby([COL_CANDIDATO, COL_ESPECTRO], as_index=False)[value_col]
-                     .median())
+    # Paso 2: mediana entre semanas por candidato
+    final = (week_med.groupby([COL_CANDIDATO, COL_ESPECTRO], as_index=False)[value_col]
+                   .median())
     return final
 
 # ============== APP ==============
@@ -194,11 +194,17 @@ def index():
   .heatwrap{ overflow-x:auto; -webkit-overflow-scrolling: touch; }
   .heatwrap table{ min-width: 760px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
   .heatwrap th, .heatwrap td{ white-space: nowrap; font-size:12px; }
-  #heatmapSemanal .heatwrap table{ min_width: 1100px; }
+  #heatmapSemanal .heatwrap table{ min-width: 1100px; }
   #heatmapSemanal .heatwrap th, #heatmapSemanal .heatwrap td{ font-size:11px; }
 
-  @media (max-width:1200px) { .grid3 { grid-template-columns: 1fr; } .cards { grid-template-columns: 1fr 1fr; } }
-  @media (max-width: 768px){ .container{ padding:18px 12px 28px; } .heatwrap th, .heatwrap td{ font-size: 11px; } }
+  @media (max-width:1200px) {
+    .grid3 { grid-template-columns: 1fr; }
+    .cards { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 768px){
+    .container{ padding:18px 12px 28px; }
+    .heatwrap th, .heatwrap td{ font-size: 11px; }
+  }
   .skeleton{ background:linear-gradient(90deg,#eee,#f5f5f5,#eee); background-size:200% 100%; animation:sh 1.2s infinite; border-radius:8px; height:20px; }
   @keyframes sh{ 0%{background-position:200% 0} 100%{background-position:-200% 0} }
 </style>
@@ -542,13 +548,13 @@ def api_bootstrap():
     }
     return jsonify({"redes": redes, "semanas": semanas, "meses": meses, "espectros": espectros, "kpis": kpis})
 
-# === BARRAS usando pipeline robusto (mediana entre semanas) ===
+# === BARRAS usando mediana dentro de semana y mediana entre semanas ===
 @app.route("/api/likes-por-candidato")
 def api_likes_por_candidato():
     df = aplicar_filtros(load_all())
     if df.empty: return jsonify([])
     df = df[pd.to_numeric(df[COL_LIKES], errors="coerce").notna()]
-    g = (_median_across_weeks_pipeline(df, COL_LIKES)
+    g = (_robust_score(df, COL_LIKES)
            .rename(columns={COL_LIKES:"likes"})
            .sort_values("likes", ascending=False))
     out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO], "likes": float(r["likes"])} for _, r in g.iterrows()]
@@ -563,7 +569,7 @@ def api_comentarios_por_candidato():
     df = aplicar_filtros(load_all())
     if df.empty: return jsonify([])
     df = df[pd.to_numeric(df[COL_COMENT], errors="coerce").notna()]
-    g = (_median_across_weeks_pipeline(df, COL_COMENT)
+    g = (_robust_score(df, COL_COMENT)
            .rename(columns={COL_COMENT:"comentarios"})
            .sort_values("comentarios", ascending=False))
     out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO], "comentarios": float(r["comentarios"])} for _, r in g.iterrows()]
@@ -574,13 +580,13 @@ def api_candidatos_todos():
     df = aplicar_filtros(load_all())
     if df.empty: return jsonify([])
     df = df[pd.to_numeric(df[COL_LIKES], errors="coerce").notna()]
-    g = (_median_across_weeks_pipeline(df, COL_LIKES)
+    g = (_robust_score(df, COL_LIKES)
            .rename(columns={COL_LIKES:"likes"})
            .sort_values("likes", ascending=False))
     out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO], "likes": float(r["likes"])} for _, r in g.iterrows()]
     return jsonify(out)
 
-# === Ganadores / Heatmaps (igual que antes) ===
+# === Ganadores / Heatmaps ===
 @app.route("/api/ganador-semanal")
 def api_ganador_semanal():
     full = load_all()
@@ -592,7 +598,8 @@ def api_ganador_semanal():
     semanas_dom = [w for w in WEEK_ORDER if w in semanas_presentes] or sorted(semanas_presentes, key=_natural_key)
 
     espectros_q  = (request.args.get("espectro") or "").strip()
-    espectros_dom = sorted(full[COL_ESPECTRO].unique().tolist()) if not espectros_q else sorted(_parse_multi(espectros_q))
+    espectros_dom = sorted(full[COL_ESPECTRO].unique().tolist()) if not espectros_q else \
+                    sorted(_parse_multi(espectros_q))
 
     out = []
     for sem in semanas_dom:
@@ -601,9 +608,12 @@ def api_ganador_semanal():
             if df_se.empty:
                 out.append({"semana": sem, "espectro": esp, "candidato": None, "interacciones": 0.0, "nd": True})
             else:
-                g = df_se.groupby(COL_CANDIDATO, as_index=False)["Interacciones"].mean()
+                g = df_se.groupby(COL_CANDIDATO, as_index=False)["Interacciones"].median()
                 row = g.loc[g["Interacciones"].idxmax()]
-                out.append({"semana": sem, "espectro": esp, "candidato": row[COL_CANDIDATO], "interacciones": float(row["Interacciones"]), "nd": False})
+                out.append({
+                    "semana": sem, "espectro": esp, "candidato": row[COL_CANDIDATO],
+                    "interacciones": float(row["Interacciones"]), "nd": False
+                })
     return jsonify(out)
 
 @app.route("/api/ganador-semanal-series")
@@ -623,7 +633,7 @@ def api_ganador_semanal_series():
             if df_se.empty:
                 values.append({"semana": sem, "espectro": esp, "interacciones": 0.0, "nd": True})
             else:
-                g = df_se.groupby(COL_CANDIDATO, as_index=False)["Interacciones"].mean()
+                g = df_se.groupby(COL_CANDIDATO, as_index=False)["Interacciones"].median()
                 row = g.loc[g["Interacciones"].idxmax()]
                 values.append({"semana": sem, "espectro": esp, "interacciones": float(row["Interacciones"]), "nd": False, "candidato": row[COL_CANDIDATO]})
     return jsonify({"semanas": semanas, "espectros": espectros, "values": values})
@@ -635,7 +645,7 @@ def api_heatmap():
         return jsonify({"rows": [], "cols": [], "values": []})
     rows = sorted(df[COL_CANDIDATO].unique().tolist())
     cols = sorted(df[COL_RED].unique().tolist())
-    g = df.groupby([COL_CANDIDATO, COL_RED], as_index=False)["Interacciones"].mean()
+    g = df.groupby([COL_CANDIDATO, COL_RED], as_index=False)["Interacciones"].median()
     values = []
     for r in rows:
         for c in cols:
@@ -643,7 +653,8 @@ def api_heatmap():
             if sub.empty or pd.isna(sub["Interacciones"].iloc[0]):
                 values.append({"candidato": r, "red": c, "valor": 0, "nd": True})
             else:
-                values.append({"candidato": r, "red": c, "valor": float(sub["Interacciones"].iloc[0]), "nd": False})
+                v = float(sub["Interacciones"].iloc[0])
+                values.append({"candidato": r, "red": c, "valor": v, "nd": False})
     return jsonify({"rows": rows, "cols": cols, "values": values})
 
 @app.route("/api/heatmap-semanal")
@@ -664,7 +675,7 @@ def api_heatmap_semanal():
     cols_raw = df["Semana"].dropna().unique().tolist()
     cols = [w for w in WEEK_ORDER if w in cols_raw] or sorted(cols_raw, key=_natural_key)
 
-    g = df.groupby([COL_CANDIDATO, "Semana"], as_index=False)[col].mean()
+    g = df.groupby([COL_CANDIDATO, "Semana"], as_index=False)[col].median()
 
     values = []
     for r in rows:
