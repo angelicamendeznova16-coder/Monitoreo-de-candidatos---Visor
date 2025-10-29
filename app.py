@@ -69,7 +69,15 @@ def _load_all_cached(_key):
 
     df = pd.concat(frames, ignore_index=True)
 
-    # Tipos
+    # --- DEDUP: evita inflar promedios por filas repetidas (Candidato, Red, Semana) ---
+    dedup_keys = [COL_CANDIDATO, COL_RED, "Semana"]
+    try:
+        if all(k in df.columns for k in dedup_keys):
+            df = df.drop_duplicates(subset=dedup_keys, keep="first")
+    except Exception:
+        pass
+
+    # Tipos (asumiendo que los decimales usan punto y no hay separadores de miles)
     for c in [COL_LIKES, COL_MAXLIKES, COL_COMENT]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -661,13 +669,14 @@ def api_bootstrap():
 def api_likes_por_candidato():
     df = aplicar_filtros(load_all())
     if df.empty: return jsonify([])
+    # Mantén SOLO valores numéricos válidos
+    df = df[pd.to_numeric(df[COL_LIKES], errors="coerce").notna()]
     g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO], as_index=False)[COL_LIKES]
            .mean()
            .rename(columns={COL_LIKES:"likes"})
            .sort_values("likes", ascending=False))
     out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO],
-            "likes": float(0 if pd.isna(r["likes"]) else r["likes"])}
-           for _, r in g.iterrows()]
+            "likes": float(r["likes"])} for _, r in g.iterrows()]
     return jsonify(out)
 
 @app.route("/api/comentarios-por_candidato")  # compat viejo nombre
@@ -678,26 +687,26 @@ def _deprecated():
 def api_comentarios_por_candidato():
     df = aplicar_filtros(load_all())
     if df.empty: return jsonify([])
+    df = df[pd.to_numeric(df[COL_COMENT], errors="coerce").notna()]
     g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO], as_index=False)[COL_COMENT]
            .mean()
            .rename(columns={COL_COMENT:"comentarios"})
            .sort_values("comentarios", ascending=False))
     out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO],
-            "comentarios": float(0 if pd.isna(r["comentarios"]) else r["comentarios"])}
-           for _, r in g.iterrows()]
+            "comentarios": float(r["comentarios"])} for _, r in g.iterrows()]
     return jsonify(out)
 
 @app.route("/api/candidatos-todos")
 def api_candidatos_todos():
     df = aplicar_filtros(load_all())
     if df.empty: return jsonify([])
+    df = df[pd.to_numeric(df[COL_LIKES], errors="coerce").notna()]
     g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO], as_index=False)[COL_LIKES]
            .mean()
            .rename(columns={COL_LIKES:"likes"})
            .sort_values("likes", ascending=False))
     out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO],
-            "likes": float(0 if pd.isna(r["likes"]) else r["likes"])}
-           for _, r in g.iterrows()]
+            "likes": float(r["likes"])} for _, r in g.iterrows()]
     return jsonify(out)
 
 @app.route("/api/ganador-semanal")
@@ -803,6 +812,83 @@ def api_heatmap_semanal():
             else:
                 values.append({"candidato": r, "semana": c, "valor": float(sub[col].iloc[0]), "nd": False})
     return jsonify({"rows": rows, "cols": cols, "values": values})
+
+# ====== ENDPOINTS DE DIAGNÓSTICO ======
+
+@app.route("/api/debug-candidato")
+def api_debug_candidato():
+    nombre = (request.args.get("candidato") or "").strip()
+    if not nombre:
+        return jsonify({"error": "falta ?candidato="}), 400
+    df = aplicar_filtros(load_all())
+    if df.empty:
+        return jsonify([])
+
+    # una fila por (Semana, Red) para evitar dobles
+    sub = (df[df[COL_CANDIDATO] == nombre]
+             .drop_duplicates(subset=["Semana", COL_RED], keep="first")
+             .sort_values(["Semana", COL_RED]))
+
+    out = []
+    for _, r in sub.iterrows():
+        out.append({
+            "semana": r["Semana"],
+            "red": r.get(COL_RED),
+            "likes": None if pd.isna(r.get(COL_LIKES)) else float(r.get(COL_LIKES)),
+            "comentarios": None if pd.isna(r.get(COL_COMENT)) else float(r.get(COL_COMENT)),
+        })
+
+    likes_vals = pd.to_numeric(sub[COL_LIKES], errors="coerce").dropna()
+    coment_vals = pd.to_numeric(sub[COL_COMENT], errors="coerce").dropna()
+    resumen = {
+        "likes_mean": float(likes_vals.mean()) if len(likes_vals) else None,
+        "likes_max": float(likes_vals.max()) if len(likes_vals) else None,
+        "coment_mean": float(coment_vals.mean()) if len(coment_vals) else None,
+        "coment_max": float(coment_vals.max()) if len(coment_vals) else None,
+        "n_filas": int(len(sub))
+    }
+    return jsonify({"filas": out, "resumen": resumen})
+
+@app.route("/api/debug-top-valores")
+def api_debug_top_valores():
+    df = load_all()
+    if df.empty:
+        return jsonify([])
+
+    cols = [COL_ESPECTRO, COL_CANDIDATO, COL_RED, "Semana"]
+    out = []
+
+    if COL_LIKES in df:
+        top_l = (df[cols + [COL_LIKES]]
+                 .dropna(subset=[COL_LIKES])
+                 .sort_values(COL_LIKES, ascending=False)
+                 .head(50))
+        for _, r in top_l.iterrows():
+            out.append({
+                "tipo": "likes",
+                "candidato": r.get(COL_CANDIDATO),
+                "espectro": r.get(COL_ESPECTRO),
+                "red": r.get(COL_RED),
+                "semana": r.get("Semana"),
+                "valor": float(r.get(COL_LIKES, 0.0))
+            })
+
+    if COL_COMENT in df:
+        top_c = (df[cols + [COL_COMENT]]
+                 .dropna(subset=[COL_COMENT])
+                 .sort_values(COL_COMENT, ascending=False)
+                 .head(50))
+        for _, r in top_c.iterrows():
+            out.append({
+                "tipo": "comentarios",
+                "candidato": r.get(COL_CANDIDATO),
+                "espectro": r.get(COL_ESPECTRO),
+                "red": r.get(COL_RED),
+                "semana": r.get("Semana"),
+                "valor": float(r.get(COL_COMENT, 0.0))
+            })
+
+    return jsonify(out)
 
 # Health-check ultra-ligero (opcional pero recomendado en Render)
 @app.route("/health")
