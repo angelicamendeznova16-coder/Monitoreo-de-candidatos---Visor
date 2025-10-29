@@ -26,25 +26,28 @@ WEEK_MAP = {
     "Semana 6": "16 Oct - 22 Oct",
     "Semana 7": "23 Oct - 28 Oct",
 }
-# Orden final deseado para las semanas (se filtrará a las que existan en el archivo)
 WEEK_ORDER = list(WEEK_MAP.values())
 
-# === Utilidades ===
+# === Utils ===
 def _natural_key(s):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', str(s))]
 
 def _parse_multi(param_value: str):
-    """'A,B,C' -> ['A','B','C']  | '', None -> []"""
     if not param_value:
         return []
     parts = [p.strip() for p in param_value.split(",") if p.strip()]
-    return list(dict.fromkeys(parts))  # sin duplicados, preserva orden
+    return list(dict.fromkeys(parts))
+
+def _valid_str(x):
+    """True si es string no vacío ni 'nan'/'none'."""
+    if pd.isna(x): return False
+    s = str(x).strip().lower()
+    if s == "" or s in {"nan","none","null"}: return False
+    return True
 
 # ---------- CARGA + LIMPIEZA (con cache) ----------
 @lru_cache(maxsize=1)
 def _cache_key():
-    # Si quieres autorecarga por cambio de archivo, puedes usar también mtime:
-    # return (os.path.abspath(EXCEL_PATH), os.path.getmtime(EXCEL_PATH) if os.path.exists(EXCEL_PATH) else -1)
     return os.path.abspath(EXCEL_PATH)
 
 @lru_cache(maxsize=1)
@@ -59,7 +62,7 @@ def _load_all_cached(_key):
         df = pd.read_excel(EXCEL_PATH, sheet_name=sh)
         if df.empty or df.dropna(how="all").empty:
             continue
-        etiqueta = WEEK_MAP.get(sh, sh)  # usa el rango bonito si está mapeado
+        etiqueta = WEEK_MAP.get(sh, sh)
         df["Semana"] = etiqueta
         frames.append(df)
 
@@ -69,23 +72,26 @@ def _load_all_cached(_key):
 
     df = pd.concat(frames, ignore_index=True)
 
-    # --- DEDUP: evita inflar promedios por filas repetidas (Candidato, Red, Semana) ---
-    dedup_keys = [COL_CANDIDATO, COL_RED, "Semana"]
-    try:
-        if all(k in df.columns for k in dedup_keys):
-            df = df.drop_duplicates(subset=dedup_keys, keep="first")
-    except Exception:
-        pass
+    # --- Limpieza básica de strings —
+    # (NO convertir a str todo; solo normalizar si existe y filtrar vacíos reales)
+    for c in [COL_ESPECTRO, COL_CANDIDATO, COL_RED, COL_TEMA, "Semana"]:
+        if c in df.columns:
+            df[c] = df[c].apply(lambda x: None if not _valid_str(x) else str(x).strip())
 
-    # Tipos (asumiendo que los decimales usan punto y no hay separadores de miles)
+    # --- DEDUP: (Candidato, Red, Semana) para evitar inflar por repetidos
+    dedup_keys = [COL_CANDIDATO, COL_RED, "Semana"]
+    if all(k in df.columns for k in dedup_keys):
+        df = df.drop_duplicates(subset=dedup_keys, keep="first")
+
+    # --- Tipos numéricos (decimales con punto, sin miles)
     for c in [COL_LIKES, COL_MAXLIKES, COL_COMENT]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    for c in [COL_ESPECTRO, COL_CANDIDATO, COL_RED, COL_TEMA, "Semana"]:
-        if c in df.columns:
-            df[c] = df[c].astype(str).str.strip()
 
-    # Interacciones = likes + comentarios (NaN->0 SOLO para esta suma)
+    # Filtrar filas sin candidato/red/semana válidos
+    df = df[df[COL_CANDIDATO].notna() & df[COL_RED].notna() & df["Semana"].notna()]
+
+    # Interacciones simple (para heatmaps/ganadores)
     df["Interacciones"] = df[COL_LIKES].fillna(0) + df[COL_COMENT].fillna(0)
     return df
 
@@ -93,13 +99,6 @@ def load_all():
     return _load_all_cached(_cache_key())
 
 def aplicar_filtros(df):
-    """
-    Filtros (todos opcionales):
-      red=R1,R2                   (multi)
-      semana=Etiqueta1,Etiqueta2  (multi)  -> usa las etiquetas visibles (p.ej. "7 Sep - 14 Sep")
-      mes=Septiembre,Octubre      (multi)
-      espectro=E1,E2              (multi)
-    """
     red_multi      = _parse_multi((request.args.get("red") or "").strip())
     semana_multi   = _parse_multi((request.args.get("semana") or "").strip())
     espectro_multi = _parse_multi((request.args.get("espectro") or "").strip())
@@ -112,7 +111,6 @@ def aplicar_filtros(df):
     if espectro_multi:
         df = df[df[COL_ESPECTRO].isin(espectro_multi)]
     if mes_multi:
-        # Mapear Español -> abreviatura presente en etiquetas de semana
         abrev = []
         for m in mes_multi:
             ml = m.strip().lower()
@@ -123,16 +121,36 @@ def aplicar_filtros(df):
             df = df[mask]
     return df
 
+# === Agregación clave para las BARRAS ===
+def _agg_semana_then_candidato(df, value_col):
+    """
+    Paso 1: promedio por Candidato×Semana (promedia entre redes de esa semana).
+    Paso 2: promedio entre semanas por Candidato (y mantenemos Espectro para color).
+    """
+    # 1) Candidato×Semana (promedio entre redes)
+    by_week = (df.groupby([COL_CANDIDATO, "Semana"], as_index=False)[value_col]
+                 .mean())
+    # Traer Espectro (modo estable: el más frecuente por candidato en el df filtrado)
+    esp_map = (df.groupby(COL_CANDIDATO)[COL_ESPECTRO]
+                 .agg(lambda s: s.mode().iat[0] if not s.mode().empty else s.dropna().iat[0]
+                      if s.dropna().size else None)
+                 .to_dict())
+    by_week[COL_ESPECTRO] = by_week[COL_CANDIDATO].map(esp_map)
+
+    # 2) Promedio entre semanas por candidato
+    final = (by_week.groupby([COL_CANDIDATO, COL_ESPECTRO], as_index=False)[value_col]
+                   .mean())
+    return final
+
 # ============== APP ==============
 app = Flask(__name__)
 
 @app.route("/")
 def index():
-    # Página liviana: NO lee Excel. Todo se carga por fetch().
     espectro_colors = {
-        "Centro":    "rgba(16,185,129,0.55)",   # verde
-        "Derecha":   "rgba(59,130,246,0.55)",   # azul
-        "Izquierda": "rgba(245,158,11,0.55)",   # naranja
+        "Centro":    "rgba(16,185,129,0.55)",
+        "Derecha":   "rgba(59,130,246,0.55)",
+        "Izquierda": "rgba(245,158,11,0.55)",
     }
     template = r'''
 <!doctype html>
@@ -336,8 +354,8 @@ def index():
 
     renderChips('chipsRed', REDES, 'red');
     renderChips('chipsEsp', ESPECTROS, 'espectro');
-    renderChips('chipsSemana', SEMANAS, 'semana');  // semanas bonitas
-    renderChips('chipsMes', MESES, 'mes');          // meses (Septiembre/Octubre)
+    renderChips('chipsSemana', SEMANAS, 'semana');
+    renderChips('chipsMes', MESES, 'mes');
 
     await drawAll();
   }
@@ -362,7 +380,6 @@ def index():
       fetch('/api/heatmap?'+params.toString()).then(r=>r.json())
     ]);
 
-    // Alturas/ancho por canvas ANTES de construir el gráfico
     setDynamicHeight('likesPorCandidato', likesCand.length);
     setDynamicHeight('comentPorCandidato', comCand.length);
     setDynamicHeight('candidatosTodos',   todos.length);
@@ -376,11 +393,7 @@ def index():
       scales: { y: { ticks: { autoSkip:false } }, x:{ ticks:{ maxTicksLimit: 8 } } }
     };
     const espectroOn = qsmulti('espectro').length>0;
-    const barCfg = {
-      barThickness: espectroOn ? 16 : 20,
-      categoryPercentage: 0.9,
-      barPercentage: 0.9
-    };
+    const barCfg = { barThickness: espectroOn ? 16 : 20, categoryPercentage: 0.9, barPercentage: 0.9 };
 
     // Likes
     drawChart(
@@ -442,7 +455,7 @@ def index():
       'todos'
     );
 
-    // Ganadores
+    // Ganadores (sin cambios de lógica)
     const canvasStack = document.getElementById('ganadoresStack');
     const ctxStack = canvasStack.getContext('2d');
     const espsSel = qsmulti('espectro');
@@ -450,12 +463,10 @@ def index():
 
     if (espsSel.length === 1) {
       const esp = espsSel[0];
-      // ordenar por SEMANAS global
       const w = winners
         .filter(x => x.espectro === esp)
         .sort((a,b) => SEMANAS.indexOf(a.semana) - SEMANAS.indexOf(b.semana));
 
-      // Etiquetas tipo "S{n}. Nombre"
       const labels = w.map(x => {
         const idx = SEMANAS.indexOf(x.semana);
         const prefix = idx >= 0 ? `S${idx + 1}. ` : '';
@@ -489,7 +500,6 @@ def index():
           plugins:{
             legend:{ display:false },
             tooltip:{ callbacks:{ 
-              // tooltip muestra también el rango de semana completo
               title: (items) => {
                 const i = items[0].dataIndex;
                 const sem = w[i]?.semana || '';
@@ -506,7 +516,6 @@ def index():
       }, 'winners');
 
     } else {
-      // apilado por semana (multi espectro)
       setDynamicHeight('ganadoresStack', (qsmulti('espectro').length || 3) * (SEMANAS.length || 6));
 
       const stackDatasets = (winSeries.espectros || []).map(esp => ({
@@ -642,14 +651,12 @@ def api_bootstrap():
     df = load_all()
     redes     = sorted(df[COL_RED].dropna().unique().tolist()) if not df.empty else []
 
-    # Semanas en el orden definido por WEEK_ORDER (filtrado a las que existan), o natural si faltan
     if not df.empty:
         semanas_raw = df["Semana"].dropna().unique().tolist()
         semanas = [w for w in WEEK_ORDER if w in semanas_raw] or sorted(semanas_raw, key=_natural_key)
     else:
         semanas = []
 
-    # Meses presentes según etiquetas (Sep/Oct)
     meses = []
     if not df.empty:
         etiquetas = set(df["Semana"].dropna().astype(str).tolist())
@@ -665,21 +672,20 @@ def api_bootstrap():
     }
     return jsonify({"redes": redes, "semanas": semanas, "meses": meses, "espectros": espectros, "kpis": kpis})
 
+# === BARRAS: usar agregación Semana→Candidato ===
 @app.route("/api/likes-por-candidato")
 def api_likes_por_candidato():
     df = aplicar_filtros(load_all())
     if df.empty: return jsonify([])
-    # Mantén SOLO valores numéricos válidos
     df = df[pd.to_numeric(df[COL_LIKES], errors="coerce").notna()]
-    g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO], as_index=False)[COL_LIKES]
-           .mean()
+    g = (_agg_semana_then_candidato(df, COL_LIKES)
            .rename(columns={COL_LIKES:"likes"})
            .sort_values("likes", ascending=False))
     out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO],
             "likes": float(r["likes"])} for _, r in g.iterrows()]
     return jsonify(out)
 
-@app.route("/api/comentarios-por_candidato")  # compat viejo nombre
+@app.route("/api/comentarios-por_candidato")  # compat viejo
 def _deprecated():
     return api_comentarios_por_candidato()
 
@@ -688,8 +694,7 @@ def api_comentarios_por_candidato():
     df = aplicar_filtros(load_all())
     if df.empty: return jsonify([])
     df = df[pd.to_numeric(df[COL_COMENT], errors="coerce").notna()]
-    g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO], as_index=False)[COL_COMENT]
-           .mean()
+    g = (_agg_semana_then_candidato(df, COL_COMENT)
            .rename(columns={COL_COMENT:"comentarios"})
            .sort_values("comentarios", ascending=False))
     out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO],
@@ -701,25 +706,23 @@ def api_candidatos_todos():
     df = aplicar_filtros(load_all())
     if df.empty: return jsonify([])
     df = df[pd.to_numeric(df[COL_LIKES], errors="coerce").notna()]
-    g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO], as_index=False)[COL_LIKES]
-           .mean()
+    g = (_agg_semana_then_candidato(df, COL_LIKES)
            .rename(columns={COL_LIKES:"likes"})
            .sort_values("likes", ascending=False))
     out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO],
             "likes": float(r["likes"])} for _, r in g.iterrows()]
     return jsonify(out)
 
+# === RESTO sin cambios de lógica ===
 @app.route("/api/ganador-semanal")
 def api_ganador_semanal():
     full = load_all()
     filtered = aplicar_filtros(full)
 
-    # Dominio de semanas según filtros/archivo, respetando WEEK_ORDER
     if not (request.args.get("semana") or "").strip() and not filtered.empty:
         semanas_presentes = full["Semana"].dropna().unique().tolist()
     else:
         semanas_presentes = filtered["Semana"].dropna().unique().tolist() if not filtered.empty else []
-
     semanas_dom = [w for w in WEEK_ORDER if w in semanas_presentes] or sorted(semanas_presentes, key=_natural_key)
 
     espectros_q  = (request.args.get("espectro") or "").strip()
@@ -797,7 +800,6 @@ def api_heatmap_semanal():
         col = "Interacciones"
 
     rows = sorted(df[COL_CANDIDATO].unique().tolist())
-    # columnas = semanas en orden deseado
     cols_raw = df["Semana"].dropna().unique().tolist()
     cols = [w for w in WEEK_ORDER if w in cols_raw] or sorted(cols_raw, key=_natural_key)
 
@@ -813,8 +815,7 @@ def api_heatmap_semanal():
                 values.append({"candidato": r, "semana": c, "valor": float(sub[col].iloc[0]), "nd": False})
     return jsonify({"rows": rows, "cols": cols, "values": values})
 
-# ====== ENDPOINTS DE DIAGNÓSTICO ======
-
+# ====== DIAGNÓSTICO (opcional) ======
 @app.route("/api/debug-candidato")
 def api_debug_candidato():
     nombre = (request.args.get("candidato") or "").strip()
@@ -824,20 +825,17 @@ def api_debug_candidato():
     if df.empty:
         return jsonify([])
 
-    # una fila por (Semana, Red) para evitar dobles
     sub = (df[df[COL_CANDIDATO] == nombre]
              .drop_duplicates(subset=["Semana", COL_RED], keep="first")
-             .sort_values(["Semana", COL_RED]))
+             .sort_values(["Semana", COL_RED]))[["Semana", COL_RED, COL_LIKES, COL_COMENT]]
 
     out = []
     for _, r in sub.iterrows():
         out.append({
-            "semana": r["Semana"],
-            "red": r.get(COL_RED),
+            "semana": r["Semana"], "red": r.get(COL_RED),
             "likes": None if pd.isna(r.get(COL_LIKES)) else float(r.get(COL_LIKES)),
             "comentarios": None if pd.isna(r.get(COL_COMENT)) else float(r.get(COL_COMENT)),
         })
-
     likes_vals = pd.to_numeric(sub[COL_LIKES], errors="coerce").dropna()
     coment_vals = pd.to_numeric(sub[COL_COMENT], errors="coerce").dropna()
     resumen = {
@@ -857,40 +855,23 @@ def api_debug_top_valores():
 
     cols = [COL_ESPECTRO, COL_CANDIDATO, COL_RED, "Semana"]
     out = []
-
     if COL_LIKES in df:
-        top_l = (df[cols + [COL_LIKES]]
-                 .dropna(subset=[COL_LIKES])
-                 .sort_values(COL_LIKES, ascending=False)
-                 .head(50))
+        top_l = (df[cols + [COL_LIKES]].dropna(subset=[COL_LIKES])
+                 .sort_values(COL_LIKES, ascending=False).head(50))
         for _, r in top_l.iterrows():
-            out.append({
-                "tipo": "likes",
-                "candidato": r.get(COL_CANDIDATO),
-                "espectro": r.get(COL_ESPECTRO),
-                "red": r.get(COL_RED),
-                "semana": r.get("Semana"),
-                "valor": float(r.get(COL_LIKES, 0.0))
-            })
-
+            out.append({"tipo":"likes","candidato":r.get(COL_CANDIDATO),"espectro":r.get(COL_ESPECTRO),
+                        "red":r.get(COL_RED),"semana":r.get("Semana"),
+                        "valor": float(r.get(COL_LIKES, 0.0))})
     if COL_COMENT in df:
-        top_c = (df[cols + [COL_COMENT]]
-                 .dropna(subset=[COL_COMENT])
-                 .sort_values(COL_COMENT, ascending=False)
-                 .head(50))
+        top_c = (df[cols + [COL_COMENT]].dropna(subset=[COL_COMENT])
+                 .sort_values(COL_COMENT, ascending=False).head(50))
         for _, r in top_c.iterrows():
-            out.append({
-                "tipo": "comentarios",
-                "candidato": r.get(COL_CANDIDATO),
-                "espectro": r.get(COL_ESPECTRO),
-                "red": r.get(COL_RED),
-                "semana": r.get("Semana"),
-                "valor": float(r.get(COL_COMENT, 0.0))
-            })
-
+            out.append({"tipo":"comentarios","candidato":r.get(COL_CANDIDATO),"espectro":r.get(COL_ESPECTRO),
+                        "red":r.get(COL_RED),"semana":r.get("Semana"),
+                        "valor": float(r.get(COL_COMENT, 0.0))})
     return jsonify(out)
 
-# Health-check ultra-ligero (opcional pero recomendado en Render)
+# Health-check
 @app.route("/health")
 def health():
     return "ok", 200
