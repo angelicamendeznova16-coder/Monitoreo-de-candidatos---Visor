@@ -122,44 +122,31 @@ def load_all():
     return _load_all_cached(_cache_key())
 
 # ---------- Normalización robusta de SEMANA ----------
-# Acepta: "Semana 3", "S-03", "SEMANA3", "23 Sep – 01  Oct", "2Oct-8Oct", "9Oct-15Oct", "16Oct-22Oct", "23Oct-28Oct",
-# y también variantes con paréntesis: "2 Oct - 8 Oct (2Oct-8Oct)".
+# Soporta: "Semana 3", "S-03", "SEMANA3", "23 Sep – 01  Oct", "2Oct-8Oct", "9Oct-15Oct", "16Oct-22Oct", "23Oct-28Oct",
+# y variantes con paréntesis: "2 Oct - 8 Oct (2Oct-8Oct)".
 _DASH_RX = re.compile(r"\s*[-–—]\s*", flags=re.IGNORECASE)
 _WORD_DASH_RX = re.compile(r"\b(a|al|hasta)\b", flags=re.IGNORECASE)
 DATE_TOKEN_RX = re.compile(r"(\d{1,2})\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\.]{3,})", flags=re.IGNORECASE)
 PARENS_RX = re.compile(r"\(.*?\)")
 
 def _norm_month_token(m: str) -> str:
-    """Normaliza cualquier variante del mes a 'Sep' o 'Oct'."""
-    t = re.sub(r"[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", "", m).lower()  # quita puntos y símbolos
-    if t.startswith("sep"):  # sep, sept, septiembre, sept.
-        return "Sep"
-    if t.startswith("oct"):  # oct, octubre, oct.
-        return "Oct"
-    return t.title()[:3]  # fallback
+    t = re.sub(r"[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", "", m).lower()
+    if t.startswith("sep"): return "Sep"
+    if t.startswith("oct"): return "Oct"
+    return t.title()[:3]
 
 def _extract_two_dates_anywhere(s: str):
-    """
-    Busca dos tokens 'día + mes' (con o sin espacios) y devuelve ((d1, M1), (d2, M2)).
-    Soporta '2 Oct - 8 Oct', '2Oct-8Oct', '2oct al 8oct', etc.
-    """
-    # Quitar paréntesis (e.g. '(2Oct-8Oct)')
-    s0 = PARENS_RX.sub("", s)
-    # Cambiar conectores por guion y normalizar cualquier guion a " - "
-    s1 = _WORD_DASH_RX.sub("-", s0)
-    s1 = _DASH_RX.sub(" - ", s1)
+    s0 = PARENS_RX.sub("", s)              # quita "(2Oct-8Oct)"
+    s1 = _WORD_DASH_RX.sub("-", s0)        # "al"/"hasta" -> "-"
+    s1 = _DASH_RX.sub(" - ", s1)           # normaliza guiones a " - "
 
     tokens = DATE_TOKEN_RX.findall(s1)
     if len(tokens) < 2:
-        # Intento adicional: detectar compactos pegados sin separadores visibles entre los dos rangos,
-        # p. ej. "16Oct-22Oct" ya lo captura DATE_TOKEN_RX (porque hay guion entre fechas).
-        # Si no, devolvemos None.
         return None
 
     (d1, m1), (d2, m2) = tokens[0], tokens[1]
     try:
-        d1 = str(int(d1))  # quita ceros a la izquierda
-        d2 = str(int(d2))
+        d1 = str(int(d1)); d2 = str(int(d2))   # quita ceros a la izquierda
     except Exception:
         return None
     m1 = _norm_month_token(m1)
@@ -167,26 +154,21 @@ def _extract_two_dates_anywhere(s: str):
     return (d1, m1), (d2, m2)
 
 def _normalize_week_label(v: str) -> str:
-    """
-    - 'Semana N' -> etiqueta oficial por WEEK_MAP
-    - Rangos en casi cualquier formato ('2Oct-8Oct', '2 Oct - 8 Oct (2Oct-8Oct)', etc.) -> '2 Oct - 8 Oct'
-    Cuando el rango coincide con una etiqueta oficial, devuelve exactamente la oficial.
-    """
     if not _valid_str(v):
         return None
 
     s = str(v).strip()
 
-    # 1) Ya es etiqueta oficial
+    # 1) Ya es oficial
     if s in WEEK_ORDER:
         return s
 
-    # 2) 'Semana N' (normalizando espacios/case)
+    # 2) "Semana N"
     k = re.sub(r"\s+", " ", s).strip().title()
     if k in WEEK_MAP:
         return WEEK_MAP[k]
 
-    # 3) Extraer número de semana de cualquier formato
+    # 3) Cualquier número de semana
     mnum = re.search(r"(\d+)", s)
     if mnum:
         n = int(mnum.group(1))
@@ -194,7 +176,7 @@ def _normalize_week_label(v: str) -> str:
         if key in WEEK_MAP:
             return WEEK_MAP[key]
 
-    # 4) Extraer dos fechas en cualquier formato de rango y normalizar
+    # 4) Rango libre con dos fechas (incluye compactos y paréntesis)
     pair = _extract_two_dates_anywhere(s)
     if pair:
         (d1, m1), (d2, m2) = pair
@@ -202,7 +184,7 @@ def _normalize_week_label(v: str) -> str:
         for official in WEEK_ORDER:
             if s_norm == official:
                 return official
-        return s_norm  # estandarizado aunque no sea oficial (por si acaso)
+        return s_norm
 
     # 5) Fallback
     return s
@@ -226,7 +208,7 @@ def _load_promedios_cached(_key):
         if c in df.columns:
             df[c] = df[c].apply(lambda x: None if not _valid_str(x) else str(x).strip())
 
-    # Normaliza 'Semana' (mapea 'Semana N' y estandariza cualquier rango, incluidos compactos y paréntesis)
+    # Normaliza 'Semana'
     if PROM_COL_SEMANA in df.columns:
         df[PROM_COL_SEMANA] = df[PROM_COL_SEMANA].apply(_normalize_week_label)
 
@@ -456,6 +438,19 @@ def index():
   let REDES = [], SEMANAS = [], ESPECTROS = [], MESES = [];
   const CH = { likes:null, coment:null, todos:null, winners:null };
 
+  // === NUEVO: fetch con fallback silencioso ===
+  async function fetchJSON(url, fallback) {
+    try {
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) return fallback;
+      const text = await r.text();
+      if (!text) return fallback;
+      try { return JSON.parse(text); } catch { return fallback; }
+    } catch (e) {
+      return fallback;
+    }
+  }
+
   function drawChart(ctx, cfg, key){ if (CH[key]) { try { CH[key].destroy(); } catch(e){} } CH[key] = new Chart(ctx, cfg); return CH[key]; }
   function qs(name){ const u=new URL(window.location.href); return u.searchParams.get(name)||""; }
   function qsmulti(name){ const v=qs(name); return v? v.split(",").map(s=>s.trim()).filter(Boolean) : []; }
@@ -483,7 +478,7 @@ def index():
   function colorsByCandidate(n) { return Array.from({length:n}, (_,i)=> PALETTE[i % PALETTE.length]); }
 
   async function bootstrap(){
-    const boot = await fetch('/api/bootstrap').then(r=>r.json());
+    const boot = await fetchJSON('/api/bootstrap', { redes:[], semanas:[], meses:[], espectros:[], kpis:{ filas:0, likes:0, coment:0, candidatos:0 } });
     REDES = boot.redes || []; SEMANAS = boot.semanas || []; MESES = boot.meses || []; ESPECTROS = boot.espectros || [];
     document.getElementById('kpiFilas').innerText = (boot.kpis.filas || 0).toLocaleString('es-ES');
     document.getElementById('kpiLikes').innerText = (boot.kpis.likes || 0).toLocaleString('es-ES');
@@ -503,14 +498,13 @@ def index():
     if(weeks.length) params.set('semana', weeks.join(',')); if(months.length) params.set('mes', months.join(','));
     if(qs('semana') && !weeks.length) params.set('semana', qs('semana'));
 
-    const [likesCand, comCand, todos, winners, winSeries, matrix] = await Promise.all([
-      fetch('/api/likes-por-candidato?'+params.toString()).then(r=>r.json()),
-      fetch('/api/comentarios-por-candidato?'+params.toString()).then(r=>r.json()),
-      fetch('/api/candidatos-todos?'+params.toString()).then(r=>r.json()),
-      fetch('/api/ganador-semanal?'+params.toString()).then(r=>r.json()),
-      fetch('/api/ganador-semanal-series?'+params.toString()).then(r=>r.json()),
-      fetch('/api/heatmap?'+params.toString()).then(r=>r.json())
-    ]);
+    // cada fetch con fallback para que nada “bloquee”
+    const likesCand = await fetchJSON('/api/likes-por-candidato?'+params.toString(), []);
+    const comCand   = await fetchJSON('/api/comentarios-por-candidato?'+params.toString(), []);
+    const todos     = await fetchJSON('/api/candidatos-todos?'+params.toString(), []);
+    const winners   = await fetchJSON('/api/ganador-semanal?'+params.toString(), []);
+    const winSeries = await fetchJSON('/api/ganador-semanal-series?'+params.toString(), { semanas:[], espectros:[], values:[] });
+    const matrix    = await fetchJSON('/api/heatmap?'+params.toString(), { rows:[], cols:[], values:[] });
 
     setDynamicHeight('likesPorCandidato', likesCand.length);
     setDynamicHeight('comentPorCandidato', comCand.length);
@@ -526,7 +520,8 @@ def index():
       type: 'bar',
       data: { labels: likesCand.map(d=>d.candidato),
               datasets: [{ label: 'Likes promedio', data: likesCand.map(d=>d.likes),
-                backgroundColor: espectroOn ? colorsBySpectro(likesCand, likesCand.map(d=>d.espectro)) : colorsByCandidate(likesCand.length),
+                backgroundColor: espectroOn ? likesCand.map(d=> ESPECTRO_COLORS[d.espectro] || "rgba(107,114,128,0.35)")
+                                             : Array.from({length:likesCand.length}, (_,i)=> PALETTE[i % PALETTE.length]),
                 ...barCfg }] },
       options: baseOpts
     }, 'likes');
@@ -536,7 +531,8 @@ def index():
       type: 'bar',
       data: { labels: comCand.map(d=>d.candidato),
               datasets: [{ label: 'Comentarios promedio', data: comCand.map(d=>d.comentarios),
-                backgroundColor: espectroOn ? colorsBySpectro(comCand, comCand.map(d=>d.espectro)) : colorsByCandidate(comCand.length),
+                backgroundColor: espectroOn ? comCand.map(d=> ESPECTRO_COLORS[d.espectro] || "rgba(107,114,128,0.35)")
+                                            : Array.from({length:comCand.length}, (_,i)=> PALETTE[i % PALETTE.length]),
                 ...barCfg }] },
       options: baseOpts
     }, 'coment');
@@ -546,7 +542,8 @@ def index():
       type: 'bar',
       data: { labels: todos.map(d=>d.candidato),
               datasets: [{ label: 'Interacciones promedio/semana', data: todos.map(d=>d.likes), // aquí "likes" = interacciones
-                backgroundColor: espectroOn ? colorsBySpectro(todos, todos.map(d=>d.espectro)) : colorsByCandidate(todos.length),
+                backgroundColor: espectroOn ? todos.map(d=> ESPECTRO_COLORS[d.espectro] || "rgba(107,114,128,0.35)")
+                                            : Array.from({length:todos.length}, (_,i)=> PALETTE[i % PALETTE.length]),
                 ...barCfg }] },
       options: baseOpts
     }, 'todos');
@@ -561,7 +558,6 @@ def index():
       const w = winners.filter(x => x.espectro === esp).sort((a,b) => SEMANAS.indexOf(a.semana) - SEMANAS.indexOf(b.semana));
       const labels = w.map(x => { const idx = SEMANAS.indexOf(x.semana); const p = idx>=0?`S${idx+1}. `:''; return `${p}${x.candidato || 'ND'}`; });
       const data   = w.map(x => x.nd ? 0 : x.interacciones);
-      setDynamicHeight('ganadoresStack', labels.length);
       drawChart(ctxStack, {
         type:'bar',
         data:{ labels, datasets:[{ label:esp, data,
@@ -570,11 +566,10 @@ def index():
         options:{ indexAxis:'y', responsive:false, maintainAspectRatio:false, animation:false,
           plugins:{ legend:{ display:false }, tooltip:{ callbacks:{
             title:(items)=>{const i=items[0].dataIndex; const sem=w[i]?.semana||''; return sem?`${sem}`:items[0].label; },
-            label:(ctx)=> (Number(ctx.raw||0)).toLocaleString('es-ES',{minimumFractionDigits:1,maximumFractionDigits:1})+' interacciones' } } },
-          scales:{ x:{ ticks:{ maxTicksLimit:8, callback:(v)=> (Number(v||0)).toLocaleString('es-ES',{minimumFractionDigits:1,maximumFractionDigits:1}) } }, y:{ ticks:{ autoSkip:false }, title:{ display:true, text:'Interacciones' } } } }
+            label:(ctx)=> f1(ctx.raw)+' interacciones' } } },
+          scales:{ x:{ ticks:{ maxTicksLimit:8, callback:(v)=> f1(v) } }, y:{ ticks:{ autoSkip:false }, title:{ display:true, text:'Interacciones' } } } }
       }, 'winners');
     } else {
-      setDynamicHeight('ganadoresStack', (qsmulti('espectro').length || 3) * (SEMANAS.length || 6));
       const stackDatasets = (winSeries.espectros || []).map(esp => ({
         label: esp,
         data: (winSeries.semanas || []).map(sem => {
@@ -588,16 +583,16 @@ def index():
         type:'bar', data:{ labels:(winSeries.semanas||[]).map((s,i)=>'S'+(i+1)), datasets:stackDatasets },
         options:{ indexAxis:'x', responsive:false, maintainAspectRatio:false, animation:false, plugins:{ legend:{ position:'top' } },
           scales:{ x:{ stacked:true, ticks:{ autoSkip:false } }, y:{ stacked:true, title:{ display:true, text:'Interacciones (ganador por espectro)' },
-            ticks:{ callback:(v)=> (Number(v||0)).toLocaleString('es-ES',{minimumFractionDigits:1,maximumFractionDigits:1}) } } } }
+            ticks:{ callback:(v)=> f1(v) } } } }
       }, 'winners');
     }
 
     // Heatmap general
     const hm = document.getElementById('heatmap');
-    if(!matrix.values.length) { hm.innerHTML = '<em>Sin datos.</em>'; }
+    if(!matrix.values || !matrix.values.length) { hm.innerHTML = '<em>Sin datos.</em>'; }
     else {
-      const rows = matrix.rows, cols = matrix.cols, vals = matrix.values;
-      const max = Math.max(...vals.map(v=>v.valor||0));
+      const rows = matrix.rows||[], cols = matrix.cols||[], vals = matrix.values||[];
+      const max = Math.max(...vals.map(v=>v.valor||0), 0);
       let html = '<table><thead><tr><th></th>';
       for (const col of cols) html += `<th>${col}</th>`;
       html += '</tr></thead><tbody>';
@@ -608,7 +603,7 @@ def index():
           const v = item ? (item.valor||0) : 0;
           const pct = max? (v/max) : 0;
           const bg = `rgba(59,130,246,${0.08 + 0.6*pct})`;
-          const disp = item && item.nd ? 'ND' : (v ? (Number(v||0)).toLocaleString('es-ES',{minimumFractionDigits:1,maximumFractionDigits:1}) : '');
+          const disp = item && item.nd ? 'ND' : (v ? f1(v) : '');
           html += `<td class="cell" style="background:${bg}">${disp}</td>`;
         }
         html += '</tr>';
@@ -620,7 +615,7 @@ def index():
     await redibujarSemanal();
   }
 
-  function aplicar(){
+  async function aplicar(){
     const u=new URL(window.location.href);
     const reds = getChipValues('red'); const esps = getChipValues('espectro');
     const weeks = getChipValues('semana'); const months = getChipValues('mes');
@@ -644,11 +639,11 @@ def index():
     if(weeks.length) params.set('semana', weeks.join(',')); if(months.length) params.set('mes', months.join(','));
     params.set('metric', metric);
 
-    const m = await fetch('/api/heatmap-semanal?'+params.toString()).then(r=>r.json());
+    const m = await fetchJSON('/api/heatmap-semanal?'+params.toString(), { rows:[], cols:[], values:[] });
     const el = document.getElementById('heatmapSemanal');
-    if(!m.values.length){ el.innerHTML = '<em>Sin datos para los filtros/semana.</em>'; return; }
-    const rows = m.rows, cols = m.cols, vals = m.values;
-    const max = Math.max(...vals.map(v=>v.valor||0));
+    if(!m.values || !m.values.length){ el.innerHTML = '<em>Sin datos para los filtros/semana.</em>'; return; }
+    const rows = m.rows||[], cols = m.cols||[], vals = m.values||[];
+    const max = Math.max(...vals.map(v=>v.valor||0), 0);
     const shortCols = cols.map((c,i)=> 'S'+(i+1));
 
     let html = '<table><thead><tr><th></th>';
@@ -663,7 +658,7 @@ def index():
         const v = item ? (item.valor||0) : 0;
         const pct = max? (v/max) : 0;
         const bg = `rgba(234,88,12,${0.07 + 0.6*pct})`;
-        const disp = item && item.nd ? 'ND' : (v ? (Number(v||0)).toLocaleString('es-ES',{minimumFractionDigits:1,maximumFractionDigits:1}) : '');
+        const disp = item && item.nd ? 'ND' : (v ? f1(v) : '');
         html += `<td class="cell" style="background:${bg}">${disp}</td>`;
       }
       html += '</tr>';
