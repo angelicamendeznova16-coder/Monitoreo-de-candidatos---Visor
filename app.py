@@ -43,6 +43,19 @@ def _valid_str(x):
     s = str(x).strip().lower()
     return not (s == "" or s in {"nan", "none", "null"})
 
+def _sanitize_numeric(series: pd.Series) -> pd.Series:
+    """
+    Limpia cada celda: quita espacios, comas y cualquier símbolo no numérico,
+    conservando solo dígitos, punto decimal y notación científica.
+    Ej: "19,000,000 " -> "19000000" ; " 13 121 " -> "13121"
+    """
+    if series is None:
+        return series
+    s = series.astype(str).str.replace(r"[^\d\.\-eE]", "", regex=True)
+    # Quita puntos "dobles" accidentales tipo "13.121.0" -> "13121.0"
+    s = s.str.replace(r"(?<=\d)\.(?=\d{3}(\D|$))", "", regex=True)  # quita puntos de miles si los hubiera
+    return pd.to_numeric(s, errors="coerce")
+
 # ---------- CARGA + LIMPIEZA (con cache) ----------
 @lru_cache(maxsize=1)
 def _cache_key():
@@ -75,10 +88,13 @@ def _load_all_cached(_key):
         if c in df.columns:
             df[c] = df[c].apply(lambda x: None if not _valid_str(x) else str(x).strip())
 
-    # Tipos numéricos (decimales con punto)
-    for c in [COL_LIKES, COL_MAXLIKES, COL_COMENT]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+    # Tipos numéricos con sanitización
+    if COL_LIKES in df.columns:
+        df[COL_LIKES] = _sanitize_numeric(df[COL_LIKES])
+    if COL_MAXLIKES in df.columns:
+        df[COL_MAXLIKES] = _sanitize_numeric(df[COL_MAXLIKES])
+    if COL_COMENT in df.columns:
+        df[COL_COMENT] = _sanitize_numeric(df[COL_COMENT])
 
     # Filtrar filas inválidas base
     df = df[df[COL_CANDIDATO].notna() & df[COL_RED].notna() & df["Semana"].notna()]
@@ -117,15 +133,11 @@ def aplicar_filtros(df):
             df = df[mask]
     return df
 
-# === PROMEDIO SEMANAL -> PROMEDIO ENTRE SEMANAS, con recorte de outliers (P99) ===
-def _weekly_mean_overall_mean_robust(df, value_col):
+# === EXACTAMENTE TU REGLA: promedio simple de TODAS las filas por candidato ===
+def _mean_of_all_rows(df, value_col):
     """
-    1) Convertir a número y limpiar NaN.
-    2) Calcular CAP dinámico = percentil 99 del valor en el DF filtrado (máximo 5,000,000 por seguridad).
-       Luego hacer clip [0, CAP] para quitar outliers que inflan.
-    3) Paso semanal: (Candidato, Semana) -> mean(value_col)  [ignora red/tema; cada semana pesa 1]
-    4) Paso final:   (Candidato) -> mean(valor_semanal)
-    Devuelve: (Candidato, Espectro, value_col)
+    Para cada candidato (y su espectro), toma el promedio simple de TODAS las filas
+    que pasen los filtros (todas las redes × todas las semanas).
     """
     if df.empty:
         return pd.DataFrame(columns=[COL_CANDIDATO, COL_ESPECTRO, value_col])
@@ -134,27 +146,19 @@ def _weekly_mean_overall_mean_robust(df, value_col):
     x[value_col] = pd.to_numeric(x[value_col], errors="coerce")
     x = x[x[value_col].notna()]
 
-    if x.empty:
-        return pd.DataFrame(columns=[COL_CANDIDATO, COL_ESPECTRO, value_col])
-
-    # CAP dinámico por percentil 99 (y tope duro razonable)
-    q99 = float(x[value_col].quantile(0.99))
-    cap = min(5_000_000.0, max(q99, 0.0))  # nunca negativo
-    x[value_col] = x[value_col].clip(lower=0, upper=cap)
-
-    # Paso 1: promedio por semana (sin distinguir red/tema)
-    week_mean = x.groupby([COL_CANDIDATO, "Semana"], as_index=False)[value_col].mean()
-
-    # Espectro estable por candidato (modo en el df filtrado original)
+    # Espectro estable por candidato (modo en el df filtrado)
     esp_map = (
-        df.groupby(COL_CANDIDATO)[COL_ESPECTRO]
-          .agg(lambda s: s.mode().iat[0] if not s.mode().empty else (s.dropna().iat[0] if s.dropna().size else None))
-          .to_dict()
+        x.groupby(COL_CANDIDATO)[COL_ESPECTRO]
+         .agg(lambda s: s.mode().iat[0] if not s.mode().empty else (s.dropna().iat[0] if s.dropna().size else None))
+         .to_dict()
     )
-    week_mean[COL_ESPECTRO] = week_mean[COL_CANDIDATO].map(esp_map)
 
-    # Paso 2: promedio entre semanas por candidato
-    final = week_mean.groupby([COL_CANDIDATO, COL_ESPECTRO], as_index=False)[value_col].mean()
+    final = (
+        x.groupby(COL_CANDIDATO, as_index=False)[value_col]
+         .mean()
+         .rename(columns={value_col: value_col})
+    )
+    final[COL_ESPECTRO] = final[COL_CANDIDATO].map(esp_map)
     return final
 
 # ============== APP ==============
@@ -204,14 +208,8 @@ def index():
   #heatmapSemanal .heatwrap table{ min-width: 1100px; }
   #heatmapSemanal .heatwrap th, #heatmapSemanal .heatwrap td{ font-size:11px; }
 
-  @media (max-width:1200px) {
-    .grid3 { grid-template-columns: 1fr; }
-    .cards { grid-template-columns: 1fr 1fr; }
-  }
-  @media (max-width: 768px){
-    .container{ padding:18px 12px 28px; }
-    .heatwrap th, .heatwrap td{ font-size: 11px; }
-  }
+  @media (max_width:1200px) { .grid3 { grid-template-columns: 1fr; } .cards { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 768px){ .container{ padding:18px 12px 28px; } .heatwrap th, .heatwrap td{ font-size: 11px; } }
   .skeleton{ background:linear-gradient(90deg,#eee,#f5f5f5,#eee); background-size:200% 100%; animation:sh 1.2s infinite; border-radius:8px; height:20px; }
   @keyframes sh{ 0%{background-position:200% 0} 100%{background-position:-200% 0} }
 </style>
@@ -555,13 +553,13 @@ def api_bootstrap():
     }
     return jsonify({"redes": redes, "semanas": semanas, "meses": meses, "espectros": espectros, "kpis": kpis})
 
-# === BARRAS (promedio semanal -> promedio entre semanas, con recorte P99) ===
+# === BARRAS (promedio directo de todas las filas por candidato) ===
 @app.route("/api/likes-por-candidato")
 def api_likes_por_candidato():
     df = aplicar_filtros(load_all())
     if df.empty: return jsonify([])
     df = df[pd.to_numeric(df[COL_LIKES], errors="coerce").notna()]
-    g = (_weekly_mean_overall_mean_robust(df, COL_LIKES)
+    g = (_mean_of_all_rows(df, COL_LIKES)
            .rename(columns={COL_LIKES:"likes"})
            .sort_values("likes", ascending=False))
     out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO], "likes": float(r["likes"])}
@@ -577,7 +575,7 @@ def api_comentarios_por_candidato():
     df = aplicar_filtros(load_all())
     if df.empty: return jsonify([])
     df = df[pd.to_numeric(df[COL_COMENT], errors="coerce").notna()]
-    g = (_weekly_mean_overall_mean_robust(df, COL_COMENT)
+    g = (_mean_of_all_rows(df, COL_COMENT)
            .rename(columns={COL_COMENT:"comentarios"})
            .sort_values("comentarios", ascending=False))
     out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO], "comentarios": float(r["comentarios"])}
@@ -589,7 +587,7 @@ def api_candidatos_todos():
     df = aplicar_filtros(load_all())
     if df.empty: return jsonify([])
     df = df[pd.to_numeric(df[COL_LIKES], errors="coerce").notna()]
-    g = (_weekly_mean_overall_mean_robust(df, COL_LIKES)
+    g = (_mean_of_all_rows(df, COL_LIKES)
            .rename(columns={COL_LIKES:"likes"})
            .sort_values("likes", ascending=False))
     out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO], "likes": float(r["likes"])}
@@ -697,6 +695,27 @@ def api_heatmap_semanal():
             else:
                 values.append({"candidato": r, "semana": c, "valor": float(sub[col].iloc[0]), "nd": False})
     return jsonify({"rows": rows, "cols": cols, "values": values})
+
+# === Endpoint opcional para revisar un candidato exacto (útil para comparar con tu Excel) ===
+@app.route("/api/check-candidato")
+def api_check_candidato():
+    name = (request.args.get("name") or "").strip()
+    value = (request.args.get("value") or "likes").strip().lower()
+    col = COL_LIKES if value.startswith("like") else COL_COMENT
+    if not name:
+        return jsonify({"error":"falta ?name="}), 400
+    df = aplicar_filtros(load_all())
+    df = df[df[COL_CANDIDATO]==name].copy()
+    if df.empty:
+        return jsonify({"error":"no hay filas para ese candidato con los filtros"}), 404
+    vals = df[col].dropna().tolist()
+    prom = float(pd.Series(vals).mean()) if vals else 0.0
+    return jsonify({
+        "candidato": name, "metric": value,
+        "n_filas": len(vals),
+        "muestras": vals[:100],  # para no reventar la respuesta
+        "promedio": prom
+    })
 
 # Health-check
 @app.route("/health")
