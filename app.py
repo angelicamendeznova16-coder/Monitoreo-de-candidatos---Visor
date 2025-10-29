@@ -1,4 +1,5 @@
 import os
+import re
 import pandas as pd
 from flask import Flask, jsonify, request, render_template_string
 from functools import lru_cache
@@ -15,20 +16,51 @@ COL_MAXLIKES   = "Publicación con más likes"
 COL_TEMA       = "Tema"
 COL_COMENT     = "Promedio comentarios  por publicación"
 
+# === Mapeo de nombres de hoja -> etiqueta visible de semana ===
+WEEK_MAP = {
+    "Semana 1": "7 Sep - 14 Sep",
+    "Semana 2": "15 Sep - 21 Sep",
+    "Semana 3": "23 Sep - 1 Oct",
+    "Semana 4": "2 Oct - 8 Oct",
+    "Semana 5": "9 Oct - 15 Oct",
+    "Semana 6": "16 Oct - 22 Oct",
+    "Semana 7": "23 Oct - 28 Oct",
+}
+# Orden final deseado para las semanas (se filtrará a las que existan en el archivo)
+WEEK_ORDER = list(WEEK_MAP.values())
+
+# === Utilidades ===
+def _natural_key(s):
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', str(s))]
+
+def _parse_multi(param_value: str):
+    """'A,B,C' -> ['A','B','C']  | '', None -> []"""
+    if not param_value:
+        return []
+    parts = [p.strip() for p in param_value.split(",") if p.strip()]
+    return list(dict.fromkeys(parts))  # sin duplicados, preserva orden
+
 # ---------- CARGA + LIMPIEZA (con cache) ----------
 @lru_cache(maxsize=1)
 def _cache_key():
+    # Si quieres que se auto-refresque cuando cambia el archivo, puedes
+    # usar también el mtime:  (os.path.abspath(EXCEL_PATH), os.path.getmtime(EXCEL_PATH))
     return os.path.abspath(EXCEL_PATH)
 
 @lru_cache(maxsize=1)
 def _load_all_cached(_key):
+    if not os.path.exists(EXCEL_PATH):
+        cols = [COL_ESPECTRO, COL_CANDIDATO, COL_RED, COL_LIKES, COL_MAXLIKES, COL_TEMA, COL_COMENT, "Semana"]
+        return pd.DataFrame(columns=cols)
+
     xls = pd.ExcelFile(EXCEL_PATH)
     frames = []
     for sh in xls.sheet_names:
         df = pd.read_excel(EXCEL_PATH, sheet_name=sh)
         if df.empty or df.dropna(how="all").empty:
             continue
-        df["Semana"] = sh
+        etiqueta = WEEK_MAP.get(sh, sh)  # usa el rango bonito si está mapeado
+        df["Semana"] = etiqueta
         frames.append(df)
 
     if not frames:
@@ -52,30 +84,35 @@ def _load_all_cached(_key):
 def load_all():
     return _load_all_cached(_cache_key())
 
-def _parse_multi(param_value: str):
-    """'A,B,C' -> ['A','B','C']  | '', None -> []"""
-    if not param_value:
-        return []
-    parts = [p.strip() for p in param_value.split(",") if p.strip()]
-    return list(dict.fromkeys(parts))  # sin duplicados, preserva orden
-
 def aplicar_filtros(df):
     """
-    Filtros:
-      red=R1,R2    (opcional, multi)
-      semana=S1    (opcional, única)
-      espectro=E1,E2 (opcional, multi)
+    Filtros (todos opcionales):
+      red=R1,R2                   (multi)
+      semana=Etiqueta1,Etiqueta2  (multi)  -> usa las etiquetas visibles (p.ej. "7 Sep - 14 Sep")
+      mes=Septiembre,Octubre      (multi)
+      espectro=E1,E2              (multi)
     """
     red_multi      = _parse_multi((request.args.get("red") or "").strip())
-    semana         = (request.args.get("semana") or "").strip()
+    semana_multi   = _parse_multi((request.args.get("semana") or "").strip())
     espectro_multi = _parse_multi((request.args.get("espectro") or "").strip())
+    mes_multi      = _parse_multi((request.args.get("mes") or "").strip())
 
     if red_multi:
         df = df[df[COL_RED].isin(red_multi)]
-    if semana:
-        df = df[df["Semana"] == semana]
+    if semana_multi:
+        df = df[df["Semana"].isin(semana_multi)]
     if espectro_multi:
         df = df[df[COL_ESPECTRO].isin(espectro_multi)]
+    if mes_multi:
+        # Mapear Español -> abreviatura presente en etiquetas de semana
+        abrev = []
+        for m in mes_multi:
+            ml = m.strip().lower()
+            if ml.startswith("sep"): abrev.append("Sep")
+            elif ml.startswith("oct"): abrev.append("Oct")
+        if abrev:
+            mask = df["Semana"].astype(str).apply(lambda s: any(a in s for a in abrev))
+            df = df[mask]
     return df
 
 # ============== APP ==============
@@ -116,12 +153,10 @@ def index():
   th, td { padding:8px 10px; border-bottom:1px solid #e5e7eb; text-align:left; }
   .cell { text-align:center; }
 
-  /* Sin alturas fijas que “crezcan”: solo mínimos */
   canvas { display:block; width:100%; }
   #likesPorCandidato, #comentPorCandidato, #candidatosTodos { min-height: 180px; }
   #ganadoresStack { min-height: 200px; }
 
-  /* Heatmaps */
   .heatwrap{ overflow-x:auto; -webkit-overflow-scrolling: touch; }
   .heatwrap table{ min-width: 760px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
   .heatwrap th, .heatwrap td{ white-space: nowrap; font-size:12px; }
@@ -162,8 +197,11 @@ def index():
       </div>
 
       <div>
-        <strong>Semana:</strong><br>
-        <select id="selSemana"><option value="">(todas)</option></select>
+        <strong>Tiempo:</strong><br>
+        <div style="font-size:12px;color:#6b7280;margin-bottom:4px">Semanas</div>
+        <span id="chipsSemana" class="chipwrap"><span class="skeleton" style="display:inline-block;width:220px"></span></span>
+        <div style="font-size:12px;color:#6b7280;margin:8px 0 4px">Meses</div>
+        <span id="chipsMes" class="chipwrap"><span class="skeleton" style="display:inline-block;width:160px"></span></span>
       </div>
 
       <div>
@@ -229,7 +267,7 @@ def index():
     "rgba(96,165,250,0.55)","rgba(250,204,21,0.55)","rgba(147,197,253,0.55)","rgba(253,186,116,0.55)"
   ];
 
-  let REDES = [], SEMANAS = [], ESPECTROS = [];
+  let REDES = [], SEMANAS = [], ESPECTROS = [], MESES = [];
   const CH = { likes:null, coment:null, todos:null, winners:null };
 
   function drawChart(ctx, cfg, key){
@@ -257,7 +295,7 @@ def index():
     return Array.from(document.querySelectorAll('input[type=checkbox][name="'+name+'"]:checked')).map(i=>i.value);
   }
 
-  // ===== Altura/Ancho DINÁMICO (atributos reales del canvas) =====
+  // ===== Altura/Ancho DINÁMICO =====
   function setDynamicHeight(canvasId, count){
     const c = document.getElementById(canvasId);
     const espectroFiltrado = qsmulti('espectro').length > 0;
@@ -265,10 +303,7 @@ def index():
     const padding   = 40;
     const rows = Math.max(count || 1, 1);
     const h = Math.max(180, Math.min(rows * rowHeight + padding, 600));
-
-    // Atributos que usa Chart.js
     c.height = h;
-    // ancho según contenedor (fallback 800)
     const w = (c.parentElement && c.parentElement.clientWidth) ? c.parentElement.clientWidth : 800;
     c.width = w;
   }
@@ -283,6 +318,7 @@ def index():
 
     REDES = boot.redes || [];
     SEMANAS = boot.semanas || [];
+    MESES = boot.meses || [];
     ESPECTROS = boot.espectros || [];
 
     document.getElementById('kpiFilas').innerText = (boot.kpis.filas || 0).toLocaleString('es-ES');
@@ -290,12 +326,10 @@ def index():
     document.getElementById('kpiCom').innerText   = (boot.kpis.coment || 0).toLocaleString('es-ES');
     document.getElementById('kpiCand').innerText  = (boot.kpis.candidatos || 0).toLocaleString('es-ES');
 
-    const selSemana = document.getElementById('selSemana');
-    selSemana.innerHTML = '<option value="">(todas)</option>' + SEMANAS.map(s=>`<option value="${s}">${s}</option>`).join('');
-    selSemana.value = qs('semana');
-
     renderChips('chipsRed', REDES, 'red');
     renderChips('chipsEsp', ESPECTROS, 'espectro');
+    renderChips('chipsSemana', SEMANAS, 'semana');  // nuevo
+    renderChips('chipsMes', MESES, 'mes');          // nuevo
 
     await drawAll();
   }
@@ -303,9 +337,13 @@ def index():
   async function drawAll(){
     const params = new URLSearchParams();
     const reds = qsmulti('red'), esps = qsmulti('espectro');
+    const weeks = qsmulti('semana'), months = qsmulti('mes');
+
     if(reds.length) params.set('red', reds.join(','));
-    if(qs('semana')) params.set('semana', qs('semana'));
     if(esps.length) params.set('espectro', esps.join(','));
+    if(weeks.length) params.set('semana', weeks.join(','));
+    if(months.length) params.set('mes', months.join(','));
+    if(qs('semana') && !weeks.length) params.set('semana', qs('semana')); // por si llega como string
 
     const [likesCand, comCand, todos, winners, winSeries, matrix] = await Promise.all([
       fetch('/api/likes-por-candidato?'+params.toString()).then(r=>r.json()),
@@ -321,10 +359,9 @@ def index():
     setDynamicHeight('comentPorCandidato', comCand.length);
     setDynamicHeight('candidatosTodos',   todos.length);
 
-    // Config base: responsivo desactivado + grosor fijo
     const baseOpts = {
       indexAxis:'y',
-      responsive:false,             // ⚠️ clave para que NO se “auto-redimensione”
+      responsive:false,
       maintainAspectRatio:false,
       animation:false,
       plugins: { legend: { display:false } },
@@ -332,8 +369,8 @@ def index():
     };
     const espectroOn = qsmulti('espectro').length>0;
     const barCfg = {
-      barThickness: espectroOn ? 16 : 20,   // grosor fijo
-      categoryPercentage: 0.9,              // menos hueco interno
+      barThickness: espectroOn ? 16 : 20,
+      categoryPercentage: 0.9,
       barPercentage: 0.9
     };
 
@@ -504,15 +541,19 @@ def index():
     const u=new URL(window.location.href);
     const reds = getChipValues('red');
     const esps = getChipValues('espectro');
-    const sem  = document.getElementById('selSemana').value || '';
+    const weeks = getChipValues('semana');
+    const months = getChipValues('mes');
+
     if(reds.length) u.searchParams.set('red', reds.join(',')); else u.searchParams.delete('red');
     if(esps.length) u.searchParams.set('espectro', esps.join(',')); else u.searchParams.delete('espectro');
-    if(sem) u.searchParams.set('semana', sem); else u.searchParams.delete('semana');
+    if(weeks.length) u.searchParams.set('semana', weeks.join(',')); else u.searchParams.delete('semana');
+    if(months.length) u.searchParams.set('mes', months.join(',')); else u.searchParams.delete('mes');
+
     window.location.href = u.toString();
   }
   function limpiar(){
     const u=new URL(window.location.href);
-    ['red','semana','espectro'].forEach(p=>u.searchParams.delete(p));
+    ['red','semana','mes','espectro'].forEach(p=>u.searchParams.delete(p));
     window.location.href=u.toString();
   }
 
@@ -520,9 +561,12 @@ def index():
     const metric = document.getElementById('selMetric').value;
     const params = new URLSearchParams();
     const reds = qsmulti('red'), esps = qsmulti('espectro');
+    const weeks = qsmulti('semana'), months = qsmulti('mes');
+
     if(reds.length) params.set('red', reds.join(','));
-    if(qs('semana')) params.set('semana', qs('semana'));
     if(esps.length) params.set('espectro', esps.join(','));
+    if(weeks.length) params.set('semana', weeks.join(','));
+    if(months.length) params.set('mes', months.join(','));
     params.set('metric', metric);
 
     const m = await fetch('/api/heatmap-semanal?'+params.toString()).then(r=>r.json());
@@ -568,7 +612,21 @@ def index():
 def api_bootstrap():
     df = load_all()
     redes     = sorted(df[COL_RED].dropna().unique().tolist()) if not df.empty else []
-    semanas   = sorted(df["Semana"].dropna().unique().tolist()) if not df.empty else []
+
+    # Semanas en el orden definido por WEEK_ORDER (filtrado a las que existan), o natural si faltan
+    if not df.empty:
+        semanas_raw = df["Semana"].dropna().unique().tolist()
+        semanas = [w for w in WEEK_ORDER if w in semanas_raw] or sorted(semanas_raw, key=_natural_key)
+    else:
+        semanas = []
+
+    # Meses presentes según etiquetas (Sep/Oct)
+    meses = []
+    if not df.empty:
+        etiquetas = set(df["Semana"].dropna().astype(str).tolist())
+        if any("Sep" in s for s in etiquetas): meses.append("Septiembre")
+        if any("Oct" in s for s in etiquetas): meses.append("Octubre")
+
     espectros = sorted(df[COL_ESPECTRO].dropna().unique().tolist()) if not df.empty else []
     kpis = {
         "filas": len(df),
@@ -576,7 +634,7 @@ def api_bootstrap():
         "coment": int(df[COL_COMENT].fillna(0).sum()) if COL_COMENT in df else 0,
         "candidatos": df[COL_CANDIDATO].nunique() if not df.empty else 0
     }
-    return jsonify({"redes": redes, "semanas": semanas, "espectros": espectros, "kpis": kpis})
+    return jsonify({"redes": redes, "semanas": semanas, "meses": meses, "espectros": espectros, "kpis": kpis})
 
 @app.route("/api/likes-por-candidato")
 def api_likes_por_candidato():
@@ -590,6 +648,10 @@ def api_likes_por_candidato():
             "likes": float(0 if pd.isna(r["likes"]) else r["likes"])}
            for _, r in g.iterrows()]
     return jsonify(out)
+
+@app.route("/api/comentarios-por_candidato")  # <-- compat: ruta anterior era con guion; mantenemos original abajo
+def _deprecated():
+    return api_comentarios_por_candidato()
 
 @app.route("/api/comentarios-por-candidato")
 def api_comentarios_por_candidato():
@@ -622,8 +684,14 @@ def api_ganador_semanal():
     full = load_all()
     filtered = aplicar_filtros(full)
 
-    semanas_dom  = sorted(full["Semana"].unique().tolist()) if not (request.args.get("semana") or "").strip() else \
-                   sorted(filtered["Semana"].unique().tolist())
+    # Dominio de semanas según filtros/archivo, respetando WEEK_ORDER
+    if not (request.args.get("semana") or "").strip() and not filtered.empty:
+        semanas_presentes = full["Semana"].dropna().unique().tolist()
+    else:
+        semanas_presentes = filtered["Semana"].dropna().unique().tolist() if not filtered.empty else []
+
+    semanas_dom = [w for w in WEEK_ORDER if w in semanas_presentes] or sorted(semanas_presentes, key=_natural_key)
+
     espectros_q  = (request.args.get("espectro") or "").strip()
     espectros_dom = sorted(full[COL_ESPECTRO].unique().tolist()) if not espectros_q else \
                     sorted(_parse_multi(espectros_q))
@@ -641,18 +709,17 @@ def api_ganador_semanal():
                     "semana": sem, "espectro": esp, "candidato": row[COL_CANDIDATO],
                     "interacciones": float(row["Interacciones"]), "nd": False
                 })
-    out.sort(key=lambda x: (x["semana"], x["espectro"]))
     return jsonify(out)
 
 @app.route("/api/ganador-semanal-series")
 def api_ganador_semanal_series():
-    full = load_all()
-    filtered = aplicar_filtros(full)
+    filtered = aplicar_filtros(load_all())
     if filtered.empty:
         return jsonify({"semanas": [], "espectros": [], "values": []})
 
-    semanas = sorted(filtered["Semana"].unique().tolist())
-    espectros = sorted(filtered[COL_ESPECTRO].unique().tolist())
+    semanas_presentes = filtered["Semana"].dropna().unique().tolist()
+    semanas = [w for w in WEEK_ORDER if w in semanas_presentes] or sorted(semanas_presentes, key=_natural_key)
+    espectros = sorted(filtered[COL_ESPECTRO].dropna().unique().tolist())
 
     values = []
     for sem in semanas:
@@ -700,7 +767,10 @@ def api_heatmap_semanal():
         col = "Interacciones"
 
     rows = sorted(df[COL_CANDIDATO].unique().tolist())
-    cols = sorted(df["Semana"].unique().tolist())
+    # columnas = semanas en orden deseado
+    cols_raw = df["Semana"].dropna().unique().tolist()
+    cols = [w for w in WEEK_ORDER if w in cols_raw] or sorted(cols_raw, key=_natural_key)
+
     g = df.groupby([COL_CANDIDATO, "Semana"], as_index=False)[col].mean()
 
     values = []
