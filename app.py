@@ -122,57 +122,65 @@ def load_all():
     return _load_all_cached(_cache_key())
 
 # ---------- Normalización robusta de SEMANA ----------
-_MONTH_FIX = {
-    # normaliza variantes a abreviaturas oficiales con mayúscula inicial
-    "sep": "Sep", "sept": "Sep", "septi": "Sep",
-    "oct": "Oct", "octu": "Oct",
-}
-_DASH_RX = re.compile(r"\s*[-–—]\s*")  # guion normal, en dash, em dash
+# Acepta formatos: "Semana 3", "S-03", "SEMANA3", "23 Sep – 01  Oct", "23 sept. al 1 octubre", etc.
+_DASH_RX = re.compile(r"\s*[-–—]\s*", flags=re.IGNORECASE)
+_WORD_DASH_RX = re.compile(r"\b(a|al|hasta)\b", flags=re.IGNORECASE)
+DATE_TOKEN_RX = re.compile(r"(\d{1,2})\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\.]{3,})", flags=re.IGNORECASE)
 
-def _norm_month(txt: str) -> str:
-    t = txt.strip().lower()
-    return _MONTH_FIX.get(t[:3], t.title()[:3])
+def _norm_month_token(m: str) -> str:
+    """Normaliza cualquier variante del mes a 'Sep' o 'Oct'."""
+    t = re.sub(r"[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", "", m).lower()  # quita puntos y símbolos
+    if t.startswith("sep"):  # sep, sept, septiembre, sept.
+        return "Sep"
+    if t.startswith("oct"):  # oct, octubre, oct.
+        return "Oct"
+    return t.title()[:3]  # fallback (no debería usarse en tu caso)
 
-def _normalize_range_label(s: str) -> str:
+def _extract_two_dates_anywhere(s: str):
     """
-    Normaliza rangos tipo '23 Sep – 01  Oct' -> '23 Sep - 1 Oct'
-    Devuelve la cadena normalizada si parece un rango válido, o el original en caso contrario.
+    Busca dos tokens 'día + mes' en el texto y devuelve ((d1, M1), (d2, M2)) ya normalizados.
+    Si no hay dos fechas, devuelve None.
     """
-    # Unificar cualquier tipo de guion a " - "
-    s2 = _DASH_RX.sub(" - ", s.strip())
-    # Capturar "D Mmm - D Mmm"
-    m = re.match(r"^\s*(\d{1,2})\s+([A-Za-zÀ-ÿ]{3,})\s-\s(\d{1,2})\s+([A-Za-zÀ-ÿ]{3,})\s*$", s2)
-    if not m:
-        return s  # no parece rango de fechas
-    d1, m1, d2, m2 = m.groups()
-    d1 = str(int(d1))  # sin ceros a la izquierda
-    d2 = str(int(d2))
-    m1 = _norm_month(m1)
-    m2 = _norm_month(m2)
-    return f"{d1} {m1} - {d2} {m2}"
+    # Cambia conectores por guion
+    s1 = _WORD_DASH_RX.sub("-", s)
+    s1 = _DASH_RX.sub(" - ", s1)
+
+    tokens = DATE_TOKEN_RX.findall(s1)
+    if len(tokens) < 2:
+        return None
+
+    (d1, m1), (d2, m2) = tokens[0], tokens[1]
+    try:
+        d1 = str(int(d1))  # quita ceros a la izquierda
+        d2 = str(int(d2))
+    except Exception:
+        return None
+    m1 = _norm_month_token(m1)
+    m2 = _norm_month_token(m2)
+    return (d1, m1), (d2, m2)
 
 def _normalize_week_label(v: str) -> str:
     """
     Soporta:
-      - 'Semana 3', 'SEMANA3', 'S-03' -> usa WEEK_MAP
-      - Rangos con guion normal o largo: '23 Sep – 01 Oct' -> '23 Sep - 1 Oct'
-    Si ya coincide con WEEK_ORDER tras normalizar, se retorna exactamente esa etiqueta.
+      - 'Semana 3', 'SEMANA3', 'S-03' (cualquier variante con número) -> mapea con WEEK_MAP
+      - Rangos con cualquier conector/guion: '23 Sep – 01 Oct', '23 sept. al 1 octubre', etc.
+    Devuelve exactamente una de las etiquetas en WEEK_ORDER si corresponde; si no, retorna el texto normalizado.
     """
     if not _valid_str(v):
         return None
 
     s = str(v).strip()
 
-    # 1) Si ya es exactamente una etiqueta oficial
+    # 1) Ya es etiqueta oficial
     if s in WEEK_ORDER:
         return s
 
-    # 2) Intento directo con 'Semana N' (normalizando espacios/case)
+    # 2) 'Semana N' (normalizando espacios/case)
     k = re.sub(r"\s+", " ", s).strip().title()  # 'semana   2' -> 'Semana 2'
     if k in WEEK_MAP:
         return WEEK_MAP[k]
 
-    # 3) Extraer cualquier número y mapear 'Semana N'
+    # 3) Extraer número de semana de cualquier formato
     mnum = re.search(r"(\d+)", s)
     if mnum:
         n = int(mnum.group(1))
@@ -180,13 +188,19 @@ def _normalize_week_label(v: str) -> str:
         if key in WEEK_MAP:
             return WEEK_MAP[key]
 
-    # 4) Normalizar si parece un rango y comprobar contra las oficiales
-    s_norm = _normalize_range_label(s)
-    if s_norm in WEEK_ORDER:
-        return s_norm
+    # 4) Extraer dos fechas en cualquier formato de rango y normalizar
+    pair = _extract_two_dates_anywhere(s)
+    if pair:
+        (d1, m1), (d2, m2) = pair
+        s_norm = f"{d1} {m1} - {d2} {m2}"
+        # Si coincide con alguna etiqueta oficial, devolver la oficial (garantiza igualdad exacta)
+        for official in WEEK_ORDER:
+            if s_norm == official:
+                return official
+        return s_norm  # al menos queda estandarizado
 
-    # 5) fallback: devolver lo que venga (pero ya con guion normalizado si aplicó)
-    return s_norm
+    # 5) Fallback: devolver original
+    return s
 
 # ---------- CARGA DE LA HOJA DE PROMEDIOS ----------
 @lru_cache(maxsize=1)
@@ -207,7 +221,7 @@ def _load_promedios_cached(_key):
         if c in df.columns:
             df[c] = df[c].apply(lambda x: None if not _valid_str(x) else str(x).strip())
 
-    # Normaliza 'Semana' (mapea 'Semana N' y también estandariza rangos)
+    # Normaliza 'Semana' (mapea 'Semana N' y estandariza cualquier rango)
     if PROM_COL_SEMANA in df.columns:
         df[PROM_COL_SEMANA] = df[PROM_COL_SEMANA].apply(_normalize_week_label)
 
@@ -263,7 +277,6 @@ def aplicar_filtros_prom(df):
         reds = {r.lower() for r in red_multi}
         df = df[df[PROM_COL_RED].astype(str).str.lower().isin(reds)]
     if semana_multi:
-        # OJO: aquí ya está normalizada con _normalize_week_label
         df = df[df[PROM_COL_SEMANA].isin(semana_multi)]
     if espectro_multi:
         esps = {e.lower() for e in espectro_multi}
@@ -402,7 +415,6 @@ def index():
   <div class="panel" style="margin-top:16px">
     <h3>Ganadores por semana y espectro</h3>
     <canvas id="ganadoresStack"></canvas>
-    <div id="tablaGanadores" style="margin-top:10px"></div>
   </div>
 
   <div class="panel" style="margin-top:16px">
@@ -534,11 +546,10 @@ def index():
       options: baseOpts
     }, 'todos');
 
-    // Ganadores
+    // Ganadores (mantenemos como estaba)
     const canvasStack = document.getElementById('ganadoresStack');
     const ctxStack = canvasStack.getContext('2d');
     const espsSel = qsmulti('espectro');
-    const fmt = (v) => f1(v);
 
     if (espsSel.length === 1) {
       const esp = espsSel[0];
@@ -554,8 +565,8 @@ def index():
         options:{ indexAxis:'y', responsive:false, maintainAspectRatio:false, animation:false,
           plugins:{ legend:{ display:false }, tooltip:{ callbacks:{
             title:(items)=>{const i=items[0].dataIndex; const sem=w[i]?.semana||''; return sem?`${sem}`:items[0].label; },
-            label:(ctx)=> fmt(ctx.raw)+' interacciones' } } },
-          scales:{ x:{ ticks:{ maxTicksLimit:8, callback:(v)=>f1(v) } }, y:{ ticks:{ autoSkip:false }, title:{ display:true, text:'Interacciones' } } } }
+            label:(ctx)=> (Number(ctx.raw||0)).toLocaleString('es-ES', {minimumFractionDigits:1,maximumFractionDigits:1})+' interacciones' } } },
+          scales:{ x:{ ticks:{ maxTicksLimit:8, callback:(v)=> (Number(v||0)).toLocaleString('es-ES',{minimumFractionDigits:1,maximumFractionDigits:1}) } }, y:{ ticks:{ autoSkip:false }, title:{ display:true, text:'Interacciones' } } } }
       }, 'winners');
     } else {
       setDynamicHeight('ganadoresStack', (qsmulti('espectro').length || 3) * (SEMANAS.length || 6));
@@ -571,7 +582,8 @@ def index():
       drawChart(ctxStack, {
         type:'bar', data:{ labels:(winSeries.semanas||[]).map((s,i)=>'S'+(i+1)), datasets:stackDatasets },
         options:{ indexAxis:'x', responsive:false, maintainAspectRatio:false, animation:false, plugins:{ legend:{ position:'top' } },
-          scales:{ x:{ stacked:true, ticks:{ autoSkip:false } }, y:{ stacked:true, title:{ display:true, text:'Interacciones (ganador por espectro)' }, ticks:{ callback:(v)=>f1(v) } } } }
+          scales:{ x:{ stacked:true, ticks:{ autoSkip:false } }, y:{ stacked:true, title:{ display:true, text:'Interacciones (ganador por espectro)' },
+            ticks:{ callback:(v)=> (Number(v||0)).toLocaleString('es-ES',{minimumFractionDigits:1,maximumFractionDigits:1}) } } } }
       }, 'winners');
     }
 
@@ -591,7 +603,7 @@ def index():
           const v = item ? (item.valor||0) : 0;
           const pct = max? (v/max) : 0;
           const bg = `rgba(59,130,246,${0.08 + 0.6*pct})`;
-          const disp = item && item.nd ? 'ND' : (v ? f1(v) : '');
+          const disp = item && item.nd ? 'ND' : (v ? (Number(v||0)).toLocaleString('es-ES',{minimumFractionDigits:1,maximumFractionDigits:1}) : '');
           html += `<td class="cell" style="background:${bg}">${disp}</td>`;
         }
         html += '</tr>';
@@ -646,7 +658,7 @@ def index():
         const v = item ? (item.valor||0) : 0;
         const pct = max? (v/max) : 0;
         const bg = `rgba(234,88,12,${0.07 + 0.6*pct})`;
-        const disp = item && item.nd ? 'ND' : (v ? f1(v) : '');
+        const disp = item && item.nd ? 'ND' : (v ? (Number(v||0)).toLocaleString('es-ES',{minimumFractionDigits:1,maximumFractionDigits:1}) : '');
         html += `<td class="cell" style="background:${bg}">${disp}</td>`;
       }
       html += '</tr>';
