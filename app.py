@@ -281,4 +281,8 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
+@app.route("/health", methods=["GET", "HEAD"])
+@app.route("/healthz", methods=["GET", "HEAD"])
+@app.route("/healthcheck", methods=["GET", "HEAD"])
+def health():
+    return ("ok", 200, {"Content-Type": "text/plain; charset=utf-8"})
