@@ -117,13 +117,14 @@ def aplicar_filtros(df):
             df = df[mask]
     return df
 
-# === CORAZÓN DE LA CORRECCIÓN: promedio de promedios semanales ===
-def _weekly_mean_overall_mean(df, value_col):
+# === PROMEDIO SEMANAL -> PROMEDIO ENTRE SEMANAS, con recorte de outliers (P99) ===
+def _weekly_mean_overall_mean_robust(df, value_col):
     """
-    Paso 1: (Candidato, Semana) -> mean(value_col)
-            (promedio dentro de la semana, ignorando red/tema)
-    Paso 2: (Candidato) -> mean(valor_semanal)
-            (promedio entre semanas; cada semana cuenta una sola vez)
+    1) Convertir a número y limpiar NaN.
+    2) Calcular CAP dinámico = percentil 99 del valor en el DF filtrado (máximo 5,000,000 por seguridad).
+       Luego hacer clip [0, CAP] para quitar outliers que inflan.
+    3) Paso semanal: (Candidato, Semana) -> mean(value_col)  [ignora red/tema; cada semana pesa 1]
+    4) Paso final:   (Candidato) -> mean(valor_semanal)
     Devuelve: (Candidato, Espectro, value_col)
     """
     if df.empty:
@@ -133,10 +134,18 @@ def _weekly_mean_overall_mean(df, value_col):
     x[value_col] = pd.to_numeric(x[value_col], errors="coerce")
     x = x[x[value_col].notna()]
 
+    if x.empty:
+        return pd.DataFrame(columns=[COL_CANDIDATO, COL_ESPECTRO, value_col])
+
+    # CAP dinámico por percentil 99 (y tope duro razonable)
+    q99 = float(x[value_col].quantile(0.99))
+    cap = min(5_000_000.0, max(q99, 0.0))  # nunca negativo
+    x[value_col] = x[value_col].clip(lower=0, upper=cap)
+
     # Paso 1: promedio por semana (sin distinguir red/tema)
     week_mean = x.groupby([COL_CANDIDATO, "Semana"], as_index=False)[value_col].mean()
 
-    # Espectro estable por candidato (modo)
+    # Espectro estable por candidato (modo en el df filtrado original)
     esp_map = (
         df.groupby(COL_CANDIDATO)[COL_ESPECTRO]
           .agg(lambda s: s.mode().iat[0] if not s.mode().empty else (s.dropna().iat[0] if s.dropna().size else None))
@@ -546,13 +555,13 @@ def api_bootstrap():
     }
     return jsonify({"redes": redes, "semanas": semanas, "meses": meses, "espectros": espectros, "kpis": kpis})
 
-# === BARRAS (promedio de promedios semanales) ===
+# === BARRAS (promedio semanal -> promedio entre semanas, con recorte P99) ===
 @app.route("/api/likes-por-candidato")
 def api_likes_por_candidato():
     df = aplicar_filtros(load_all())
     if df.empty: return jsonify([])
     df = df[pd.to_numeric(df[COL_LIKES], errors="coerce").notna()]
-    g = (_weekly_mean_overall_mean(df, COL_LIKES)
+    g = (_weekly_mean_overall_mean_robust(df, COL_LIKES)
            .rename(columns={COL_LIKES:"likes"})
            .sort_values("likes", ascending=False))
     out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO], "likes": float(r["likes"])}
@@ -568,7 +577,7 @@ def api_comentarios_por_candidato():
     df = aplicar_filtros(load_all())
     if df.empty: return jsonify([])
     df = df[pd.to_numeric(df[COL_COMENT], errors="coerce").notna()]
-    g = (_weekly_mean_overall_mean(df, COL_COMENT)
+    g = (_weekly_mean_overall_mean_robust(df, COL_COMENT)
            .rename(columns={COL_COMENT:"comentarios"})
            .sort_values("comentarios", ascending=False))
     out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO], "comentarios": float(r["comentarios"])}
@@ -580,7 +589,7 @@ def api_candidatos_todos():
     df = aplicar_filtros(load_all())
     if df.empty: return jsonify([])
     df = df[pd.to_numeric(df[COL_LIKES], errors="coerce").notna()]
-    g = (_weekly_mean_overall_mean(df, COL_LIKES)
+    g = (_weekly_mean_overall_mean_robust(df, COL_LIKES)
            .rename(columns={COL_LIKES:"likes"})
            .sort_values("likes", ascending=False))
     out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO], "likes": float(r["likes"])}
