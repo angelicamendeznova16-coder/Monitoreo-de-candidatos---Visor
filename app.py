@@ -57,7 +57,7 @@ def _sanitize_numeric(series: pd.Series) -> pd.Series:
     if series is None:
         return series
     s = series.astype(str).str.replace(r"[^\d\.\-eE]", "", regex=True)
-    s = s.str.replace(r"(?<=\d)\.(?=\d{3}(\D|$))", "", regex=True)  # quita separadores de miles con punto
+    s = s.str.replace(r"(?<=\d)\.(?=\d{3}(\D|$))", "", regex=True)  # quitar puntos de miles si los hubiera
     return pd.to_numeric(s, errors="coerce")
 
 def _r1(x):
@@ -121,37 +121,72 @@ def _load_all_cached(_key):
 def load_all():
     return _load_all_cached(_cache_key())
 
-# ---------- Normalización de semanas (robusta) ----------
+# ---------- Normalización robusta de SEMANA ----------
+_MONTH_FIX = {
+    # normaliza variantes a abreviaturas oficiales con mayúscula inicial
+    "sep": "Sep", "sept": "Sep", "septi": "Sep",
+    "oct": "Oct", "octu": "Oct",
+}
+_DASH_RX = re.compile(r"\s*[-–—]\s*")  # guion normal, en dash, em dash
+
+def _norm_month(txt: str) -> str:
+    t = txt.strip().lower()
+    return _MONTH_FIX.get(t[:3], t.title()[:3])
+
+def _normalize_range_label(s: str) -> str:
+    """
+    Normaliza rangos tipo '23 Sep – 01  Oct' -> '23 Sep - 1 Oct'
+    Devuelve la cadena normalizada si parece un rango válido, o el original en caso contrario.
+    """
+    # Unificar cualquier tipo de guion a " - "
+    s2 = _DASH_RX.sub(" - ", s.strip())
+    # Capturar "D Mmm - D Mmm"
+    m = re.match(r"^\s*(\d{1,2})\s+([A-Za-zÀ-ÿ]{3,})\s-\s(\d{1,2})\s+([A-Za-zÀ-ÿ]{3,})\s*$", s2)
+    if not m:
+        return s  # no parece rango de fechas
+    d1, m1, d2, m2 = m.groups()
+    d1 = str(int(d1))  # sin ceros a la izquierda
+    d2 = str(int(d2))
+    m1 = _norm_month(m1)
+    m2 = _norm_month(m2)
+    return f"{d1} {m1} - {d2} {m2}"
+
 def _normalize_week_label(v: str) -> str:
     """
-    Normaliza cualquier variante de 'Semana N' (p. ej. 'Semana2', 'S-03', 'SEMANA 4')
-    a la etiqueta oficial (p. ej. '15 Sep - 21 Sep').
-    Si ya viene en formato '7 Sep - 14 Sep', se deja tal cual.
+    Soporta:
+      - 'Semana 3', 'SEMANA3', 'S-03' -> usa WEEK_MAP
+      - Rangos con guion normal o largo: '23 Sep – 01 Oct' -> '23 Sep - 1 Oct'
+    Si ya coincide con WEEK_ORDER tras normalizar, se retorna exactamente esa etiqueta.
     """
     if not _valid_str(v):
         return None
 
     s = str(v).strip()
 
-    # Ya es etiqueta final
+    # 1) Si ya es exactamente una etiqueta oficial
     if s in WEEK_ORDER:
         return s
 
-    # Coincidencia directa con llaves del mapa (normalizando espacios/case)
+    # 2) Intento directo con 'Semana N' (normalizando espacios/case)
     k = re.sub(r"\s+", " ", s).strip().title()  # 'semana   2' -> 'Semana 2'
     if k in WEEK_MAP:
         return WEEK_MAP[k]
 
-    # Extraer número de semana de cualquier formato
-    m = re.search(r"(\d+)", s)
-    if m:
-        n = int(m.group(1))
+    # 3) Extraer cualquier número y mapear 'Semana N'
+    mnum = re.search(r"(\d+)", s)
+    if mnum:
+        n = int(mnum.group(1))
         key = f"Semana {n}"
         if key in WEEK_MAP:
             return WEEK_MAP[key]
 
-    # Fallback: devolver lo que venía
-    return s
+    # 4) Normalizar si parece un rango y comprobar contra las oficiales
+    s_norm = _normalize_range_label(s)
+    if s_norm in WEEK_ORDER:
+        return s_norm
+
+    # 5) fallback: devolver lo que venga (pero ya con guion normalizado si aplicó)
+    return s_norm
 
 # ---------- CARGA DE LA HOJA DE PROMEDIOS ----------
 @lru_cache(maxsize=1)
@@ -172,7 +207,7 @@ def _load_promedios_cached(_key):
         if c in df.columns:
             df[c] = df[c].apply(lambda x: None if not _valid_str(x) else str(x).strip())
 
-    # Normaliza 'Semana'
+    # Normaliza 'Semana' (mapea 'Semana N' y también estandariza rangos)
     if PROM_COL_SEMANA in df.columns:
         df[PROM_COL_SEMANA] = df[PROM_COL_SEMANA].apply(_normalize_week_label)
 
@@ -228,6 +263,7 @@ def aplicar_filtros_prom(df):
         reds = {r.lower() for r in red_multi}
         df = df[df[PROM_COL_RED].astype(str).str.lower().isin(reds)]
     if semana_multi:
+        # OJO: aquí ya está normalizada con _normalize_week_label
         df = df[df[PROM_COL_SEMANA].isin(semana_multi)]
     if espectro_multi:
         esps = {e.lower() for e in espectro_multi}
