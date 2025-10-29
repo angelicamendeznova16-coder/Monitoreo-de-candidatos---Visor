@@ -7,7 +7,7 @@ from functools import lru_cache
 # === Ruta del Excel ===
 EXCEL_PATH = os.environ.get("EXCEL_PATH", "Monitoreo_de_candidatos_largo.xlsx")
 
-# === Columnas del Excel ===
+# === Columnas del Excel (hojas semanales) ===
 COL_ESPECTRO   = "Espectro"
 COL_CANDIDATO  = "Candidato"
 COL_RED        = "Red Social"
@@ -15,6 +15,16 @@ COL_LIKES      = "Promedio likes x semana"
 COL_MAXLIKES   = "Publicación con más likes"
 COL_TEMA       = "Tema"
 COL_COMENT     = "Promedio comentarios  por publicación"
+
+# === Hoja y columnas de la hoja de promedios ===
+PROM_SHEET = "Promedios totales candidato"
+PROM_COL_ESPECTRO  = "Espectro"
+PROM_COL_CANDIDATO = "Candidato"
+PROM_COL_RED       = "Red Social"
+PROM_COL_SEMANA    = "Semana"
+PROM_COL_INTERSEM  = "Candidatos por promedio de interacciones a la semana"
+PROM_COL_LIKES     = "Likes promedio candidato"
+PROM_COL_COMENT    = "Comentarios promedio candidato"
 
 # === Nombres visibles de semanas (mapeo de hoja -> etiqueta) ===
 WEEK_MAP = {
@@ -70,6 +80,9 @@ def _load_all_cached(_key):
     xls = pd.ExcelFile(EXCEL_PATH)
     frames = []
     for sh in xls.sheet_names:
+        # Saltar la hoja de promedios en el loader principal
+        if sh.strip() == PROM_SHEET:
+            continue
         df = pd.read_excel(EXCEL_PATH, sheet_name=sh)
         if df.empty or df.dropna(how="all").empty:
             continue
@@ -110,6 +123,41 @@ def _load_all_cached(_key):
 def load_all():
     return _load_all_cached(_cache_key())
 
+# ---------- CARGA DE LA HOJA DE PROMEDIOS (con cache) ----------
+@lru_cache(maxsize=1)
+def _load_promedios_cached(_key):
+    if not os.path.exists(EXCEL_PATH):
+        cols = [PROM_COL_ESPECTRO, PROM_COL_CANDIDATO, PROM_COL_RED,
+                PROM_COL_SEMANA, PROM_COL_INTERSEM, PROM_COL_LIKES, PROM_COL_COMENT]
+        return pd.DataFrame(columns=cols)
+
+    try:
+        df = pd.read_excel(EXCEL_PATH, sheet_name=PROM_SHEET)
+    except Exception:
+        cols = [PROM_COL_ESPECTRO, PROM_COL_CANDIDATO, PROM_COL_RED,
+                PROM_COL_SEMANA, PROM_COL_INTERSEM, PROM_COL_LIKES, PROM_COL_COMENT]
+        return pd.DataFrame(columns=cols)
+
+    # Limpieza básica
+    for c in [PROM_COL_ESPECTRO, PROM_COL_CANDIDATO, PROM_COL_RED, PROM_COL_SEMANA]:
+        if c in df.columns:
+            df[c] = df[c].apply(lambda x: None if not _valid_str(x) else str(x).strip())
+
+    for numc in [PROM_COL_INTERSEM, PROM_COL_LIKES, PROM_COL_COMENT]:
+        if numc in df.columns:
+            df[numc] = _sanitize_numeric(df[numc])
+
+    # Filas válidas mínimas
+    need = [PROM_COL_CANDIDATO, PROM_COL_RED, PROM_COL_SEMANA]
+    for n in need:
+        if n not in df.columns:
+            df[n] = None
+    df = df[df[PROM_COL_CANDIDATO].notna() & df[PROM_COL_RED].notna() & df[PROM_COL_SEMANA].notna()]
+    return df
+
+def load_promedios():
+    return _load_promedios_cached(_cache_key())
+
 def aplicar_filtros(df):
     red_multi      = _parse_multi((request.args.get("red") or "").strip())
     semana_multi   = _parse_multi((request.args.get("semana") or "").strip())
@@ -133,7 +181,31 @@ def aplicar_filtros(df):
             df = df[mask]
     return df
 
-# === EXACTAMENTE TU REGLA: promedio simple de TODAS las filas por candidato ===
+def aplicar_filtros_prom(df):
+    # mismos filtros que aplicar_filtros(), pero con columnas de la hoja de promedios
+    red_multi      = _parse_multi((request.args.get("red") or "").strip())
+    semana_multi   = _parse_multi((request.args.get("semana") or "").strip())
+    espectro_multi = _parse_multi((request.args.get("espectro") or "").strip())
+    mes_multi      = _parse_multi((request.args.get("mes") or "").strip())
+
+    if red_multi:
+        df = df[df[PROM_COL_RED].isin(red_multi)]
+    if semana_multi:
+        df = df[df[PROM_COL_SEMANA].isin(semana_multi)]
+    if espectro_multi:
+        df = df[df[PROM_COL_ESPECTRO].isin(espectro_multi)]
+    if mes_multi:
+        abrev = []
+        for m in mes_multi:
+            ml = m.strip().lower()
+            if ml.startswith("sep"): abrev.append("Sep")
+            elif ml.startswith("oct"): abrev.append("Oct")
+        if abrev:
+            mask = df[PROM_COL_SEMANA].astype(str).apply(lambda s: any(a in s for a in abrev))
+            df = df[mask]
+    return df
+
+# === EXACTAMENTE TU REGLA: promedio simple de TODAS las filas por candidato (loader semanal) ===
 def _mean_of_all_rows(df, value_col):
     """
     Para cada candidato (y su espectro), toma el promedio simple de TODAS las filas
@@ -262,7 +334,7 @@ def index():
         <canvas id="comentPorCandidato"></canvas>
       </div>
       <div class="panel">
-        <h3>Candidatos por likes (según filtros) — todos</h3>
+        <h3>Candidatos por promedio de interacciones a la semana (según filtros)</h3>
         <canvas id="candidatosTodos"></canvas>
       </div>
     </div>
@@ -391,11 +463,11 @@ def index():
       options: baseOpts
     }, 'coment');
 
-    // Todos (likes)
+    // Promedio de interacciones a la semana (reusamos la tercera tarjeta)
     drawChart(document.getElementById('candidatosTodos').getContext('2d'), {
       type: 'bar',
       data: { labels: todos.map(d=>d.candidato),
-              datasets: [{ label: 'Likes promedio', data: todos.map(d=>d.likes),
+              datasets: [{ label: 'Interacciones promedio/semana', data: todos.map(d=>d.likes),  // "likes" contiene interacciones aquí
                 backgroundColor: espectroOn ? colorsBySpectro(todos, todos.map(d=>d.espectro)) : colorsByCandidate(todos.length),
                 ...barCfg }] },
       options: baseOpts
@@ -553,17 +625,20 @@ def api_bootstrap():
     }
     return jsonify({"redes": redes, "semanas": semanas, "meses": meses, "espectros": espectros, "kpis": kpis})
 
-# === BARRAS (promedio directo de todas las filas por candidato) ===
+# === BARRAS usando HOJA DE PROMEDIOS ===
 @app.route("/api/likes-por-candidato")
 def api_likes_por_candidato():
-    df = aplicar_filtros(load_all())
-    if df.empty: return jsonify([])
-    df = df[pd.to_numeric(df[COL_LIKES], errors="coerce").notna()]
-    g = (_mean_of_all_rows(df, COL_LIKES)
-           .rename(columns={COL_LIKES:"likes"})
+    df = aplicar_filtros_prom(load_promedios())
+    if df.empty or PROM_COL_LIKES not in df.columns:
+        return jsonify([])
+
+    x = df[[PROM_COL_CANDIDATO, PROM_COL_ESPECTRO, PROM_COL_LIKES]].copy()
+    x = x[pd.to_numeric(x[PROM_COL_LIKES], errors="coerce").notna()]
+    g = (x.groupby(PROM_COL_CANDIDATO, as_index=False)
+           .agg({PROM_COL_LIKES: "mean", PROM_COL_ESPECTRO: lambda s: s.mode().iat[0] if not s.mode().empty else s.dropna().iat[0] if s.dropna().size else None})
+           .rename(columns={PROM_COL_LIKES: "likes", PROM_COL_CANDIDATO: "candidato", PROM_COL_ESPECTRO: "espectro"})
            .sort_values("likes", ascending=False))
-    out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO], "likes": float(r["likes"])}
-           for _, r in g.iterrows()]
+    out = g.to_dict(orient="records")
     return jsonify(out)
 
 @app.route("/api/comentarios-por_candidato")  # compat viejo
@@ -572,29 +647,38 @@ def _deprecated():
 
 @app.route("/api/comentarios-por-candidato")
 def api_comentarios_por_candidato():
-    df = aplicar_filtros(load_all())
-    if df.empty: return jsonify([])
-    df = df[pd.to_numeric(df[COL_COMENT], errors="coerce").notna()]
-    g = (_mean_of_all_rows(df, COL_COMENT)
-           .rename(columns={COL_COMENT:"comentarios"})
+    df = aplicar_filtros_prom(load_promedios())
+    if df.empty or PROM_COL_COMENT not in df.columns:
+        return jsonify([])
+
+    x = df[[PROM_COL_CANDIDATO, PROM_COL_ESPECTRO, PROM_COL_COMENT]].copy()
+    x = x[pd.to_numeric(x[PROM_COL_COMENT], errors="coerce").notna()]
+    g = (x.groupby(PROM_COL_CANDIDATO, as_index=False)
+           .agg({PROM_COL_COMENT: "mean", PROM_COL_ESPECTRO: lambda s: s.mode().iat[0] if not s.mode().empty else s.dropna().iat[0] if s.dropna().size else None})
+           .rename(columns={PROM_COL_COMENT: "comentarios", PROM_COL_CANDIDATO: "candidato", PROM_COL_ESPECTRO: "espectro"})
            .sort_values("comentarios", ascending=False))
-    out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO], "comentarios": float(r["comentarios"])}
-           for _, r in g.iterrows()]
+    out = g.to_dict(orient="records")
     return jsonify(out)
 
 @app.route("/api/candidatos-todos")
 def api_candidatos_todos():
-    df = aplicar_filtros(load_all())
-    if df.empty: return jsonify([])
-    df = df[pd.to_numeric(df[COL_LIKES], errors="coerce").notna()]
-    g = (_mean_of_all_rows(df, COL_LIKES)
-           .rename(columns={COL_LIKES:"likes"})
-           .sort_values("likes", ascending=False))
-    out = [{"candidato": r[COL_CANDIDATO], "espectro": r[COL_ESPECTRO], "likes": float(r["likes"])}
-           for _, r in g.iterrows()]
+    # Esta tarjeta ahora muestra "Candidatos por promedio de interacciones a la semana"
+    df = aplicar_filtros_prom(load_promedios())
+    if df.empty or PROM_COL_INTERSEM not in df.columns:
+        return jsonify([])
+
+    x = df[[PROM_COL_CANDIDATO, PROM_COL_ESPECTRO, PROM_COL_INTERSEM]].copy()
+    x = x[pd.to_numeric(x[PROM_COL_INTERSEM], errors="coerce").notna()]
+    g = (x.groupby(PROM_COL_CANDIDATO, as_index=False)
+           .agg({PROM_COL_INTERSEM: "mean", PROM_COL_ESPECTRO: lambda s: s.mode().iat[0] if not s.mode().empty else s.dropna().iat[0] if s.dropna().size else None})
+           .rename(columns={PROM_COL_INTERSEM: "interacciones", PROM_COL_CANDIDATO: "candidato", PROM_COL_ESPECTRO: "espectro"})
+           .sort_values("interacciones", ascending=False))
+
+    # Para no tocar el JS, devolvemos en la clave "likes" la métrica de interacciones promedio/semana
+    out = [{"candidato": r["candidato"], "espectro": r["espectro"], "likes": float(r["interacciones"])} for _, r in g.iterrows()]
     return jsonify(out)
 
-# === Ganadores / Heatmaps (como antes) ===
+# === Ganadores / Heatmaps (con hojas semanales, igual que antes) ===
 @app.route("/api/ganador-semanal")
 def api_ganador_semanal():
     full = load_all()
