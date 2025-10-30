@@ -22,14 +22,14 @@ PROM_COL_ESPECTRO  = "Espectro"
 PROM_COL_CANDIDATO = "Candidato"
 PROM_COL_RED       = "Red Social"
 PROM_COL_SEMANA    = "Semana"
-# NUEVO: columna de equivalencias para la web (ajusta al nombre real si es distinto)
-PROM_COL_SEMANA_EQ = "Semana web"   # <--- cámbialo si tu columna se llama de otra forma
+# Si agregaste una columna de equivalencia, ajústala aquí:
+PROM_COL_SEMANA_EQ = "Semana web"   # <--- cambia a tu nombre exacto si es distinto
 
 PROM_COL_INTERSEM  = "Candidatos por promedio de interacciones a la semana"
 PROM_COL_LIKES     = "Likes promedio candidato"
 PROM_COL_COMENT    = "Comentarios promedio candidato"
 
-# === Nombres visibles de semanas (mapeo de hoja -> etiqueta) ===
+# === Nombres visibles de semanas (mapeo hoja -> etiqueta canónica) ===
 WEEK_MAP = {
     "Semana 1": "7 Sep - 14 Sep",
     "Semana 2": "15 Sep - 21 Sep",
@@ -40,7 +40,6 @@ WEEK_MAP = {
     "Semana 7": "23 Oct - 28 Oct",
 }
 WEEK_ORDER = list(WEEK_MAP.values())
-WEEK_MAP_REV = {v: k for k, v in WEEK_MAP.items()}
 
 # === Utils ===
 def _natural_key(s):
@@ -125,12 +124,13 @@ def _load_all_cached(_key):
 def load_all():
     return _load_all_cached(_cache_key())
 
-# ---------- Normalización robusta de SEMANA ----------
-# Compacto: normalizador ESTRICTO a etiquetas canónicas de WEEK_ORDER
+# ---------- Normalización de SEMANA (tolerante) ----------
 def _normalize_week_strict(s: str):
     """
     Normaliza semanas a las etiquetas canónicas (WEEK_ORDER).
-    Soporta: 'Semana N', 'S N', 'semanaN', o la etiqueta exacta.
+    Soporta: 'Semana N', 'S N', 'semanaN',
+             y rangos '7 Sep - 14' (completa mes final) o '7 Sep - 14 Sep'.
+    Si no reconoce, devuelve el valor original para no romper datos.
     """
     if not _valid_str(s):
         return None
@@ -146,11 +146,29 @@ def _normalize_week_strict(s: str):
         n = int(m.group(1))
         return WEEK_MAP.get(f"Semana {n}", s1)
 
-    # Intento de match normalizando espacios
+    # Normaliza espacios
     s2 = re.sub(r"\s+", " ", s1)
-    for official in WEEK_ORDER:
-        if re.sub(r"\s+", " ", official) == s2:
-            return official
+
+    # Caso rango con mes inicial y día final SIN mes (ej: '7 Sep - 14')
+    m2 = re.match(r"^\s*(\d{1,2})\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{3,})\s*-\s*(\d{1,2})\s*$", s2)
+    if m2:
+        d1, mtxt, d2 = m2.groups()
+        mtxt = mtxt[:3].title()  # 'Sep'/'Oct'
+        candidate = f"{int(d1)} {mtxt} - {int(d2)} {mtxt}"
+        for off in WEEK_ORDER:
+            if re.sub(r"\s+", " ", off).lower() == re.sub(r"\s+", " ", candidate).lower():
+                return off
+        return candidate  # al menos completamos el mes final
+
+    # Caso rango completo (ej: '7 Sep - 14 Sep' o '23 Sep - 1 Oct')
+    m3 = re.match(r"^\s*\d{1,2}\s*[A-Za-z].*-\s*\d{1,2}\s*[A-Za-z].*\s*$", s2)
+    if m3:
+        for off in WEEK_ORDER:
+            if re.sub(r"\s+", " ", off).lower() == s2.lower():
+                return off
+        return s2
+
+    # Fallback: no romper datos
     return s1
 
 # ---------- CARGA DE LA HOJA DE PROMEDIOS ----------
@@ -176,7 +194,7 @@ def _load_promedios_cached(_key):
     if PROM_COL_SEMANA in df.columns:
         df[PROM_COL_SEMANA] = df[PROM_COL_SEMANA].apply(_normalize_week_strict)
 
-    # NUEVO: coalesce a semana equivalente con prioridad (si existe)
+    # Coalesce a semana equivalente con prioridad (si existe)
     if PROM_COL_SEMANA_EQ in df.columns:
         df[PROM_COL_SEMANA_EQ] = df[PROM_COL_SEMANA_EQ].apply(_normalize_week_strict)
         df["_SemanaEff"] = df[PROM_COL_SEMANA_EQ].where(df[PROM_COL_SEMANA_EQ].notna(), df[PROM_COL_SEMANA])
@@ -188,8 +206,8 @@ def _load_promedios_cached(_key):
         if numc in df.columns:
             df[numc] = _sanitize_numeric(df[numc])
 
-    # Filtrado mínimo
-    df = df[df[PROM_COL_CANDIDATO].notna() & df[PROM_COL_RED].notna() & df["_SemanaEff"].notna()]
+    # Filtrado mínimo (NO descartamos por _SemanaEff para no perder datos)
+    df = df[df[PROM_COL_CANDIDATO].notna() & df[PROM_COL_RED].notna()]
     return df
 
 def load_promedios():
@@ -412,7 +430,6 @@ def index():
   let REDES = [], SEMANAS = [], ESPECTROS = [], MESES = [];
   const CH = { likes:null, coment:null, todos:null, winners:null };
 
-  // === fetch con fallback silencioso ===
   async function fetchJSON(url, fallback) {
     try {
       const r = await fetch(url, { cache: 'no-store' });
@@ -448,8 +465,6 @@ def index():
     const h = Math.max(180, Math.min(rows * rowHeight + padding, 600));
     c.height = h; c.width = (c.parentElement && c.parentElement.clientWidth) ? c.parentElement.clientWidth : 800;
   }
-  function colorsBySpectro(arr, espectros) { return arr.map((_,i)=> ESPECTRO_COLORS[espectros[i]] || "rgba(107,114,128,0.35)"); }
-  function colorsByCandidate(n) { return Array.from({length:n}, (_,i)=> PALETTE[i % PALETTE.length]); }
 
   async function bootstrap(){
     const boot = await fetchJSON('/api/bootstrap', { redes:[], semanas:[], meses:[], espectros:[], kpis:{ filas:0, likes:0, coment:0, candidatos:0 } });
@@ -484,7 +499,7 @@ def index():
     setDynamicHeight('candidatosTodos',   todos.length);
 
     const baseOpts = { indexAxis:'y', responsive:false, maintainAspectRatio:false, animation:false,
-      plugins: { legend: { display:false } }, scales: { y: { ticks: { autoSkip:false } }, x:{ ticks:{ maxTicksLimit: 8, callback:(v)=>f1(v) } } } };
+      plugins: { legend: { display:false } }, scales: { y: { ticks: { autoSkip:false } }, x:{ ticks:{ maxTicksLimit: 8, callback:(v)=>Number(v).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) } } } };
     const espectroOn = qsmulti('espectro').length>0;
     const barCfg = { barThickness: espectroOn ? 16 : 20, categoryPercentage: 0.9, barPercentage: 0.9 };
 
@@ -494,7 +509,7 @@ def index():
       data: { labels: likesCand.map(d=>d.candidato),
               datasets: [{ label: 'Likes promedio', data: likesCand.map(d=>d.likes),
                 backgroundColor: espectroOn ? likesCand.map(d=> ESPECTRO_COLORS[d.espectro] || "rgba(107,114,128,0.35)")
-                                             : Array.from({length:likesCand.length}, (_,i)=> PALETTE[i % PALETTE.length]),
+                                             : Array.from({length:likesCand.length}, (_,i)=> ["rgba(99,102,241,0.55)","rgba(236,72,153,0.55)","rgba(34,197,94,0.55)","rgba(59,130,246,0.55)","rgba(234,179,8,0.55)","rgba(244,114,182,0.55)","rgba(16,185,129,0.55)","rgba(251,113,133,0.55)","rgba(96,165,250,0.55)","rgba(250,204,21,0.55)","rgba(147,197,253,0.55)","rgba(253,186,116,0.55)"][i % 12]),
                 ...barCfg }] },
       options: baseOpts
     });
@@ -505,7 +520,7 @@ def index():
       data: { labels: comCand.map(d=>d.candidato),
               datasets: [{ label: 'Comentarios promedio', data: comCand.map(d=>d.comentarios),
                 backgroundColor: espectroOn ? comCand.map(d=> ESPECTRO_COLORS[d.espectro] || "rgba(107,114,128,0.35)")
-                                            : Array.from({length:comCand.length}, (_,i)=> PALETTE[i % PALETTE.length]),
+                                            : Array.from({length:comCand.length}, (_,i)=> ["rgba(99,102,241,0.55)","rgba(236,72,153,0.55)","rgba(34,197,94,0.55)","rgba(59,130,246,0.55)","rgba(234,179,8,0.55)","rgba(244,114,182,0.55)","rgba(16,185,129,0.55)","rgba(251,113,133,0.55)","rgba(96,165,250,0.55)","rgba(250,204,21,0.55)","rgba(147,197,253,0.55)","rgba(253,186,116,0.55)"][i % 12]),
                 ...barCfg }] },
       options: baseOpts
     });
@@ -516,7 +531,7 @@ def index():
       data: { labels: todos.map(d=>d.candidato),
               datasets: [{ label: 'Interacciones promedio/semana', data: todos.map(d=>d.likes), // aquí "likes" = interacciones
                 backgroundColor: espectroOn ? todos.map(d=> ESPECTRO_COLORS[d.espectro] || "rgba(107,114,128,0.35)")
-                                            : Array.from({length:todos.length}, (_,i)=> PALETTE[i % PALETTE.length]),
+                                            : Array.from({length:todos.length}, (_,i)=> ["rgba(99,102,241,0.55)","rgba(236,72,153,0.55)","rgba(34,197,94,0.55)","rgba(59,130,246,0.55)","rgba(234,179,8,0.55)","rgba(244,114,182,0.55)","rgba(16,185,129,0.55)","rgba(251,113,133,0.55)","rgba(96,165,250,0.55)","rgba(250,204,21,0.55)","rgba(147,197,253,0.55)","rgba(253,186,116,0.55)"][i % 12]),
                 ...barCfg }] },
       options: baseOpts
     });
@@ -528,7 +543,6 @@ def index():
 
     if (espsSel.length === 1) {
       const esp = espsSel[0];
-      const winners = await fetchJSON('/api/ganador-semanal?'+params.toString(), []);
       const w = winners.filter(x => x.espectro === esp).sort((a,b) => SEMANAS.indexOf(a.semana) - SEMANAS.indexOf(b.semana));
       const labels = w.map(x => { const idx = SEMANAS.indexOf(x.semana); const p = idx>=0?`S${idx+1}. `:''; return `${p}${x.candidato || 'ND'}`; });
       const data   = w.map(x => x.nd ? 0 : x.interacciones);
@@ -540,11 +554,10 @@ def index():
         options:{ indexAxis:'y', responsive:false, maintainAspectRatio:false, animation:false,
           plugins:{ legend:{ display:false }, tooltip:{ callbacks:{
             title:(items)=>{const i=items[0].dataIndex; const sem=w[i]?.semana||''; return sem?`${sem}`:items[0].label; },
-            label:(ctx)=> f1(ctx.raw)+' interacciones' } } },
-          scales:{ x:{ ticks:{ maxTicksLimit:8, callback:(v)=> f1(v) } }, y:{ ticks:{ autoSkip:false }, title:{ display:true, text:'Interacciones' } } } }
+            label:(ctx)=> Number(ctx.raw||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 })+' interacciones' } } },
+          scales:{ x:{ ticks:{ maxTicksLimit:8, callback:(v)=> Number(v||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) } }, y:{ ticks:{ autoSkip:false }, title:{ display:true, text:'Interacciones' } } } }
       });
     } else {
-      const winSeries = await fetchJSON('/api/ganador-semanal-series?'+params.toString(), { semanas:[], espectros:[], values:[] });
       const stackDatasets = (winSeries.espectros || []).map(esp => ({
         label: esp,
         data: (winSeries.semanas || []).map(sem => {
@@ -558,12 +571,11 @@ def index():
         type:'bar', data:{ labels:(winSeries.semanas||[]).map((s,i)=>'S'+(i+1)), datasets:stackDatasets },
         options:{ indexAxis:'x', responsive:false, maintainAspectRatio:false, animation:false, plugins:{ legend:{ position:'top' } },
           scales:{ x:{ stacked:true, ticks:{ autoSkip:false } }, y:{ stacked:true, title:{ display:true, text:'Interacciones (ganador por espectro)' },
-            ticks:{ callback:(v)=> f1(v) } } } }
+            ticks:{ callback:(v)=> Number(v||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) } } } }
       });
     }
 
     // Heatmap general
-    const matrix = await fetchJSON('/api/heatmap?'+params.toString(), { rows:[], cols:[], values:[] });
     const hm = document.getElementById('heatmap');
     if(!matrix.values || !matrix.values.length) { hm.innerHTML = '<em>Sin datos.</em>'; }
     else {
@@ -579,7 +591,7 @@ def index():
           const v = item ? (item.valor||0) : 0;
           const pct = max? (v/max) : 0;
           const bg = `rgba(59,130,246,${0.08 + 0.6*pct})`;
-          const disp = item && item.nd ? 'ND' : (v ? f1(v) : '');
+          const disp = item && item.nd ? 'ND' : (v ? Number(v||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '');
           html += `<td class="cell" style="background:${bg}">${disp}</td>`;
         }
         html += '</tr>';
@@ -634,7 +646,7 @@ def index():
         const v = item ? (item.valor||0) : 0;
         const pct = max? (v/max) : 0;
         const bg = `rgba(234,88,12,${0.07 + 0.6*pct})`;
-        const disp = item && item.nd ? 'ND' : (v ? f1(v) : '');
+        const disp = item && item.nd ? 'ND' : (v ? Number(v||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '');
         html += `<td class="cell" style="background:${bg}">${disp}</td>`;
       }
       html += '</tr>';
@@ -642,6 +654,9 @@ def index():
     html += '</tbody></table>';
     el.innerHTML = '<div class="heatwrap">' + html + '</div>';
   }
+
+  // Helpers del front
+  function getChipValues(name){ return Array.from(document.querySelectorAll('input[type=checkbox][name="'+name+'"]:checked')).map(i=>i.value); }
 
   bootstrap();
 </script>
@@ -666,11 +681,19 @@ def api_bootstrap():
 
     # Semanas visibles: prioriza equivalencia desde promedios (_SemanaEff)
     prom = load_promedios()
-    if not prom.empty:
+    if not prom.empty and "_SemanaEff" in prom.columns:
         semanas_raw = prom["_SemanaEff"].dropna().unique().tolist()
     else:
-        semanas_raw = df["Semana"].dropna().unique().tolist() if not df.empty else []
-    semanas = [w for w in WEEK_ORDER if w in semanas_raw]
+        semanas_raw = []
+
+    if not semanas_raw and not df.empty:
+        # Fallback a etiquetas de las hojas semanales
+        semanas_raw = df["Semana"].dropna().unique().tolist()
+
+    # Ordena por el orden fijo; si alguna no está en WEEK_ORDER, añádela al final
+    present = [w for w in WEEK_ORDER if w in semanas_raw]
+    extras  = [w for w in semanas_raw if w not in present]
+    semanas = present + sorted(extras, key=_natural_key)
 
     meses = []
     etiquetas = set(semanas)
@@ -843,7 +866,7 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
-# Health-check (duplicado del tuyo original, lo mantengo para no romper nada)
+# Health-check duplicado (se mantiene como en tu archivo original)
 @app.route("/health")
 def health_dup():
     return "ok", 200
