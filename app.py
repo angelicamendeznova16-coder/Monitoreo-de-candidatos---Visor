@@ -22,6 +22,9 @@ PROM_COL_ESPECTRO  = "Espectro"
 PROM_COL_CANDIDATO = "Candidato"
 PROM_COL_RED       = "Red Social"
 PROM_COL_SEMANA    = "Semana"
+# NUEVO: columna de equivalencias para la web (ajusta al nombre real si es distinto)
+PROM_COL_SEMANA_EQ = "Semana web"   # <--- cámbialo si tu columna se llama de otra forma
+
 PROM_COL_INTERSEM  = "Candidatos por promedio de interacciones a la semana"
 PROM_COL_LIKES     = "Likes promedio candidato"
 PROM_COL_COMENT    = "Comentarios promedio candidato"
@@ -37,6 +40,7 @@ WEEK_MAP = {
     "Semana 7": "23 Oct - 28 Oct",
 }
 WEEK_ORDER = list(WEEK_MAP.values())
+WEEK_MAP_REV = {v: k for k, v in WEEK_MAP.items()}
 
 # === Utils ===
 def _natural_key(s):
@@ -122,72 +126,32 @@ def load_all():
     return _load_all_cached(_cache_key())
 
 # ---------- Normalización robusta de SEMANA ----------
-# Soporta: "Semana 3", "S-03", "SEMANA3", "23 Sep – 01  Oct", "2Oct-8Oct", "9Oct-15Oct", "16Oct-22Oct", "23Oct-28Oct",
-# y variantes con paréntesis: "2 Oct - 8 Oct (2Oct-8Oct)".
-_DASH_RX = re.compile(r"\s*[-–—]\s*", flags=re.IGNORECASE)
-_WORD_DASH_RX = re.compile(r"\b(a|al|hasta)\b", flags=re.IGNORECASE)
-DATE_TOKEN_RX = re.compile(r"(\d{1,2})\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\.]{3,})", flags=re.IGNORECASE)
-PARENS_RX = re.compile(r"\(.*?\)")
-
-def _norm_month_token(m: str) -> str:
-    t = re.sub(r"[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", "", m).lower()
-    if t.startswith("sep"): return "Sep"
-    if t.startswith("oct"): return "Oct"
-    return t.title()[:3]
-
-def _extract_two_dates_anywhere(s: str):
-    s0 = PARENS_RX.sub("", s)              # quita "(2Oct-8Oct)"
-    s1 = _WORD_DASH_RX.sub("-", s0)        # "al"/"hasta" -> "-"
-    s1 = _DASH_RX.sub(" - ", s1)           # normaliza guiones a " - "
-
-    tokens = DATE_TOKEN_RX.findall(s1)
-    if len(tokens) < 2:
+# Compacto: normalizador ESTRICTO a etiquetas canónicas de WEEK_ORDER
+def _normalize_week_strict(s: str):
+    """
+    Normaliza semanas a las etiquetas canónicas (WEEK_ORDER).
+    Soporta: 'Semana N', 'S N', 'semanaN', o la etiqueta exacta.
+    """
+    if not _valid_str(s):
         return None
+    s1 = str(s).strip()
 
-    (d1, m1), (d2, m2) = tokens[0], tokens[1]
-    try:
-        d1 = str(int(d1)); d2 = str(int(d2))   # quita ceros a la izquierda
-    except Exception:
-        return None
-    m1 = _norm_month_token(m1)
-    m2 = _norm_month_token(m2)
-    return (d1, m1), (d2, m2)
+    # Ya es etiqueta canónica
+    if s1 in WEEK_ORDER:
+        return s1
 
-def _normalize_week_label(v: str) -> str:
-    if not _valid_str(v):
-        return None
+    # 'Semana N' / 'S N'
+    m = re.search(r"(?:semana|s)\s*([1-7])", s1, flags=re.IGNORECASE)
+    if m:
+        n = int(m.group(1))
+        return WEEK_MAP.get(f"Semana {n}", s1)
 
-    s = str(v).strip()
-
-    # 1) Ya es oficial
-    if s in WEEK_ORDER:
-        return s
-
-    # 2) "Semana N"
-    k = re.sub(r"\s+", " ", s).strip().title()
-    if k in WEEK_MAP:
-        return WEEK_MAP[k]
-
-    # 3) Cualquier número de semana
-    mnum = re.search(r"(\d+)", s)
-    if mnum:
-        n = int(mnum.group(1))
-        key = f"Semana {n}"
-        if key in WEEK_MAP:
-            return WEEK_MAP[key]
-
-    # 4) Rango libre con dos fechas (incluye compactos y paréntesis)
-    pair = _extract_two_dates_anywhere(s)
-    if pair:
-        (d1, m1), (d2, m2) = pair
-        s_norm = f"{d1} {m1} - {d2} {m2}"
-        for official in WEEK_ORDER:
-            if s_norm == official:
-                return official
-        return s_norm
-
-    # 5) Fallback
-    return s
+    # Intento de match normalizando espacios
+    s2 = re.sub(r"\s+", " ", s1)
+    for official in WEEK_ORDER:
+        if re.sub(r"\s+", " ", official) == s2:
+            return official
+    return s1
 
 # ---------- CARGA DE LA HOJA DE PROMEDIOS ----------
 @lru_cache(maxsize=1)
@@ -208,9 +172,16 @@ def _load_promedios_cached(_key):
         if c in df.columns:
             df[c] = df[c].apply(lambda x: None if not _valid_str(x) else str(x).strip())
 
-    # Normaliza 'Semana'
+    # Normaliza 'Semana' visible a etiqueta canónica
     if PROM_COL_SEMANA in df.columns:
-        df[PROM_COL_SEMANA] = df[PROM_COL_SEMANA].apply(_normalize_week_label)
+        df[PROM_COL_SEMANA] = df[PROM_COL_SEMANA].apply(_normalize_week_strict)
+
+    # NUEVO: coalesce a semana equivalente con prioridad (si existe)
+    if PROM_COL_SEMANA_EQ in df.columns:
+        df[PROM_COL_SEMANA_EQ] = df[PROM_COL_SEMANA_EQ].apply(_normalize_week_strict)
+        df["_SemanaEff"] = df[PROM_COL_SEMANA_EQ].where(df[PROM_COL_SEMANA_EQ].notna(), df[PROM_COL_SEMANA])
+    else:
+        df["_SemanaEff"] = df[PROM_COL_SEMANA]
 
     # Numéricos
     for numc in [PROM_COL_INTERSEM, PROM_COL_LIKES, PROM_COL_COMENT]:
@@ -218,7 +189,7 @@ def _load_promedios_cached(_key):
             df[numc] = _sanitize_numeric(df[numc])
 
     # Filtrado mínimo
-    df = df[df[PROM_COL_CANDIDATO].notna() & df[PROM_COL_RED].notna() & df[PROM_COL_SEMANA].notna()]
+    df = df[df[PROM_COL_CANDIDATO].notna() & df[PROM_COL_RED].notna() & df["_SemanaEff"].notna()]
     return df
 
 def load_promedios():
@@ -243,7 +214,8 @@ def aplicar_filtros(df):
         reds = {r.lower() for r in red_multi}
         df = df[df[COL_RED].astype(str).str.lower().isin(reds)]
     if semana_multi:
-        df = df[df["Semana"].isin(semana_multi)]
+        semanas_norm = [_normalize_week_strict(s) for s in semana_multi]
+        df = df[df["Semana"].isin(semanas_norm)]
     if espectro_multi:
         esps = {e.lower() for e in espectro_multi}
         df = df[df[COL_ESPECTRO].astype(str).str.lower().isin(esps)]
@@ -263,15 +235,17 @@ def aplicar_filtros_prom(df):
     if red_multi:
         reds = {r.lower() for r in red_multi}
         df = df[df[PROM_COL_RED].astype(str).str.lower().isin(reds)]
+    # Semanas: filtra por la equivalencia efectiva
     if semana_multi:
-        df = df[df[PROM_COL_SEMANA].isin(semana_multi)]
+        semanas_norm = [_normalize_week_strict(s) for s in semana_multi]
+        df = df[df["_SemanaEff"].isin(semanas_norm)]
     if espectro_multi:
         esps = {e.lower() for e in espectro_multi}
         df = df[df[PROM_COL_ESPECTRO].astype(str).str.lower().isin(esps)]
     if mes_multi:
         abrev = _month_abbrev_list(mes_multi)
         if abrev:
-            mask = df[PROM_COL_SEMANA].astype(str).apply(lambda s: any(a in s for a in abrev))
+            mask = df["_SemanaEff"].astype(str).apply(lambda s: any(a in s for a in abrev))
             df = df[mask]
     return df
 
@@ -438,7 +412,7 @@ def index():
   let REDES = [], SEMANAS = [], ESPECTROS = [], MESES = [];
   const CH = { likes:null, coment:null, todos:null, winners:null };
 
-  // === NUEVO: fetch con fallback silencioso ===
+  // === fetch con fallback silencioso ===
   async function fetchJSON(url, fallback) {
     try {
       const r = await fetch(url, { cache: 'no-store' });
@@ -498,7 +472,6 @@ def index():
     if(weeks.length) params.set('semana', weeks.join(',')); if(months.length) params.set('mes', months.join(','));
     if(qs('semana') && !weeks.length) params.set('semana', qs('semana'));
 
-    // cada fetch con fallback para que nada “bloquee”
     const likesCand = await fetchJSON('/api/likes-por-candidato?'+params.toString(), []);
     const comCand   = await fetchJSON('/api/comentarios-por-candidato?'+params.toString(), []);
     const todos     = await fetchJSON('/api/candidatos-todos?'+params.toString(), []);
@@ -516,7 +489,7 @@ def index():
     const barCfg = { barThickness: espectroOn ? 16 : 20, categoryPercentage: 0.9, barPercentage: 0.9 };
 
     // Likes
-    drawChart(document.getElementById('likesPorCandidato').getContext('2d'), {
+    new Chart(document.getElementById('likesPorCandidato').getContext('2d'), {
       type: 'bar',
       data: { labels: likesCand.map(d=>d.candidato),
               datasets: [{ label: 'Likes promedio', data: likesCand.map(d=>d.likes),
@@ -524,10 +497,10 @@ def index():
                                              : Array.from({length:likesCand.length}, (_,i)=> PALETTE[i % PALETTE.length]),
                 ...barCfg }] },
       options: baseOpts
-    }, 'likes');
+    });
 
     // Comentarios
-    drawChart(document.getElementById('comentPorCandidato').getContext('2d'), {
+    new Chart(document.getElementById('comentPorCandidato').getContext('2d'), {
       type: 'bar',
       data: { labels: comCand.map(d=>d.candidato),
               datasets: [{ label: 'Comentarios promedio', data: comCand.map(d=>d.comentarios),
@@ -535,10 +508,10 @@ def index():
                                             : Array.from({length:comCand.length}, (_,i)=> PALETTE[i % PALETTE.length]),
                 ...barCfg }] },
       options: baseOpts
-    }, 'coment');
+    });
 
     // Interacciones promedio/semana (tercera tarjeta)
-    drawChart(document.getElementById('candidatosTodos').getContext('2d'), {
+    new Chart(document.getElementById('candidatosTodos').getContext('2d'), {
       type: 'bar',
       data: { labels: todos.map(d=>d.candidato),
               datasets: [{ label: 'Interacciones promedio/semana', data: todos.map(d=>d.likes), // aquí "likes" = interacciones
@@ -546,7 +519,7 @@ def index():
                                             : Array.from({length:todos.length}, (_,i)=> PALETTE[i % PALETTE.length]),
                 ...barCfg }] },
       options: baseOpts
-    }, 'todos');
+    });
 
     // Ganadores
     const canvasStack = document.getElementById('ganadoresStack');
@@ -555,10 +528,11 @@ def index():
 
     if (espsSel.length === 1) {
       const esp = espsSel[0];
+      const winners = await fetchJSON('/api/ganador-semanal?'+params.toString(), []);
       const w = winners.filter(x => x.espectro === esp).sort((a,b) => SEMANAS.indexOf(a.semana) - SEMANAS.indexOf(b.semana));
       const labels = w.map(x => { const idx = SEMANAS.indexOf(x.semana); const p = idx>=0?`S${idx+1}. `:''; return `${p}${x.candidato || 'ND'}`; });
       const data   = w.map(x => x.nd ? 0 : x.interacciones);
-      drawChart(ctxStack, {
+      new Chart(ctxStack, {
         type:'bar',
         data:{ labels, datasets:[{ label:esp, data,
           backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)', borderColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.55)',
@@ -568,8 +542,9 @@ def index():
             title:(items)=>{const i=items[0].dataIndex; const sem=w[i]?.semana||''; return sem?`${sem}`:items[0].label; },
             label:(ctx)=> f1(ctx.raw)+' interacciones' } } },
           scales:{ x:{ ticks:{ maxTicksLimit:8, callback:(v)=> f1(v) } }, y:{ ticks:{ autoSkip:false }, title:{ display:true, text:'Interacciones' } } } }
-      }, 'winners');
+      });
     } else {
+      const winSeries = await fetchJSON('/api/ganador-semanal-series?'+params.toString(), { semanas:[], espectros:[], values:[] });
       const stackDatasets = (winSeries.espectros || []).map(esp => ({
         label: esp,
         data: (winSeries.semanas || []).map(sem => {
@@ -579,15 +554,16 @@ def index():
         backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)', borderColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.55)',
         borderWidth: 0, barThickness: 18, categoryPercentage: 0.9, barPercentage: 0.9
       }));
-      drawChart(ctxStack, {
+      new Chart(ctxStack, {
         type:'bar', data:{ labels:(winSeries.semanas||[]).map((s,i)=>'S'+(i+1)), datasets:stackDatasets },
         options:{ indexAxis:'x', responsive:false, maintainAspectRatio:false, animation:false, plugins:{ legend:{ position:'top' } },
           scales:{ x:{ stacked:true, ticks:{ autoSkip:false } }, y:{ stacked:true, title:{ display:true, text:'Interacciones (ganador por espectro)' },
             ticks:{ callback:(v)=> f1(v) } } } }
-      }, 'winners');
+      });
     }
 
     // Heatmap general
+    const matrix = await fetchJSON('/api/heatmap?'+params.toString(), { rows:[], cols:[], values:[] });
     const hm = document.getElementById('heatmap');
     if(!matrix.values || !matrix.values.length) { hm.innerHTML = '<em>Sin datos.</em>'; }
     else {
@@ -687,16 +663,20 @@ def catch_all(subpath):
 def api_bootstrap():
     df = load_all()
     redes     = sorted(df[COL_RED].dropna().unique().tolist()) if not df.empty else []
-    if not df.empty:
-        semanas_raw = df["Semana"].dropna().unique().tolist()
-        semanas = [w for w in WEEK_ORDER if w in semanas_raw] or sorted(semanas_raw, key=_natural_key)
+
+    # Semanas visibles: prioriza equivalencia desde promedios (_SemanaEff)
+    prom = load_promedios()
+    if not prom.empty:
+        semanas_raw = prom["_SemanaEff"].dropna().unique().tolist()
     else:
-        semanas = []
+        semanas_raw = df["Semana"].dropna().unique().tolist() if not df.empty else []
+    semanas = [w for w in WEEK_ORDER if w in semanas_raw]
+
     meses = []
-    if not df.empty:
-        etiquetas = set(df["Semana"].dropna().astype(str).tolist())
-        if any("Sep" in s for s in etiquetas): meses.append("Septiembre")
-        if any("Oct" in s for s in etiquetas): meses.append("Octubre")
+    etiquetas = set(semanas)
+    if any("Sep" in s for s in etiquetas): meses.append("Septiembre")
+    if any("Oct" in s for s in etiquetas): meses.append("Octubre")
+
     espectros = sorted(df[COL_ESPECTRO].dropna().unique().tolist()) if not df.empty else []
     kpis = {
         "filas": len(df),
@@ -858,6 +838,15 @@ def api_heatmap_semanal():
 @app.route("/healthcheck", methods=["GET", "HEAD"])
 def health():
     return ("ok", 200, {"Content-Type": "text/plain; charset=utf-8"})
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+
+# Health-check (duplicado del tuyo original, lo mantengo para no romper nada)
+@app.route("/health")
+def health_dup():
+    return "ok", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
