@@ -38,7 +38,9 @@ WEEK_MAP = {
     "Semana 5": "9 Oct - 15 Oct",
     "Semana 6": "16 Oct - 22 Oct",
     "Semana 7": "23 Oct - 28 Oct",
-}
+    "Semana 8": "29Oct-05Nov"
+“Semana 9": "23 Oct - 28 Oct"
+    "Semana 10": "Nov 05 – Nov 12”
 WEEK_ORDER = list(WEEK_MAP.values())
 
 # === Utils ===
@@ -60,10 +62,11 @@ def _sanitize_numeric(series: pd.Series) -> pd.Series:
     if series is None:
         return series
     s = series.astype(str).str.replace(r"[^\d\.\-eE]", "", regex=True)
-    s = s.str.replace(r"(?<=\d)\.(?=\d{3}(\D|$))", "", regex=True)  # separador de miles con punto
+    s = s.str.replace(r"(?<=\d)\.(?=\d{3}(\D|$))", "", regex=True)  # quitar separadores de miles con punto
     return pd.to_numeric(s, errors="coerce")
 
 def _r1(x):
+    """Redondea a 1 decimal (float) o None."""
     try:
         return round(float(x), 1)
     except Exception:
@@ -84,11 +87,11 @@ def _load_all_cached(_key):
     frames = []
     for sh in xls.sheet_names:
         if sh.strip() == PROM_SHEET:
-            continue
+            continue  # la hoja de promedios se carga aparte
         df = pd.read_excel(EXCEL_PATH, sheet_name=sh)
         if df.empty or df.dropna(how="all").empty:
             continue
-        etiqueta = WEEK_MAP.get(sh, sh)
+        etiqueta = WEEK_MAP.get(sh, sh)  # si no está mapeada, deja el nombre tal cual
         df["Semana"] = etiqueta
         frames.append(df)
 
@@ -125,30 +128,41 @@ def load_all():
 
 # ---------- Normalización de SEMANA (tolerante) ----------
 def _normalize_week_strict(s: str):
+    """
+    Normaliza semanas a las etiquetas canónicas (WEEK_ORDER).
+    Soporta: 'Semana N', 'S N', 'semanaN',
+             y rangos '7 Sep - 14' (completa mes final) o '7 Sep - 14 Sep'.
+    Si no reconoce, devuelve el valor original para no romper datos.
+    """
     if not _valid_str(s):
         return None
     s1 = str(s).strip()
 
+    # Ya es etiqueta canónica
     if s1 in WEEK_ORDER:
         return s1
 
-    m = re.search(r"(?:semana|s)\s*([1-7])", s1, flags=re.IGNORECASE)
+    # 'Semana N' / 'S N'
+    m = re.search(r"(?:semana|s)\s*([1-9])", s1, flags=re.IGNORECASE)
     if m:
         n = int(m.group(1))
         return WEEK_MAP.get(f"Semana {n}", s1)
 
+    # Normaliza espacios
     s2 = re.sub(r"\s+", " ", s1)
 
+    # Caso rango con mes inicial y día final SIN mes
     m2 = re.match(r"^\s*(\d{1,2})\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{3,})\s*-\s*(\d{1,2})\s*$", s2)
     if m2:
         d1, mtxt, d2 = m2.groups()
-        mtxt = mtxt[:3].title()
+        mtxt = mtxt[:3].title()  # 'Sep'/'Oct'
         candidate = f"{int(d1)} {mtxt} - {int(d2)} {mtxt}"
         for off in WEEK_ORDER:
             if re.sub(r"\s+", " ", off).lower() == re.sub(r"\s+", " ", candidate).lower():
                 return off
         return candidate
 
+    # Caso rango completo
     m3 = re.match(r"^\s*\d{1,2}\s*[A-Za-z].*-\s*\d{1,2}\s*[A-Za-z].*\s*$", s2)
     if m3:
         for off in WEEK_ORDER:
@@ -177,7 +191,7 @@ def _load_promedios_cached(_key):
         if c in df.columns:
             df[c] = df[c].apply(lambda x: None if not _valid_str(x) else str(x).strip())
 
-    # Normaliza 'Semana'
+    # Normaliza 'Semana' visible a etiqueta canónica
     if PROM_COL_SEMANA in df.columns:
         df[PROM_COL_SEMANA] = df[PROM_COL_SEMANA].apply(_normalize_week_strict)
 
@@ -193,6 +207,7 @@ def _load_promedios_cached(_key):
         if numc in df.columns:
             df[numc] = _sanitize_numeric(df[numc])
 
+    # Filtrado mínimo
     df = df[df[PROM_COL_CANDIDATO].notna() & df[PROM_COL_RED].notna()]
     return df
 
@@ -239,6 +254,7 @@ def aplicar_filtros_prom(df):
     if red_multi:
         reds = {r.lower() for r in red_multi}
         df = df[df[PROM_COL_RED].astype(str).str.lower().isin(reds)]
+    # Semanas: filtra por la equivalencia efectiva
     if semana_multi:
         semanas_norm = [_normalize_week_strict(s) for s in semana_multi]
         df = df[df["_SemanaEff"].isin(semanas_norm)]
@@ -267,22 +283,6 @@ def _mean_of_all_rows(df, value_col):
     final = x.groupby(COL_CANDIDATO, as_index=False)[value_col].mean()
     final[COL_ESPECTRO] = final[COL_CANDIDATO].map(esp_map)
     return final
-
-# ---------- Ordenación robusta de semanas según filtros ----------
-def _ordered_weeks_from_df(df_weeks_series):
-    """Ordena semanas presentes priorizando WEEK_ORDER y luego extras."""
-    present = df_weeks_series.dropna().unique().tolist()
-    if not present:
-        return []
-    canon = [w for w in WEEK_ORDER if w in present]
-    extras = [w for w in present if w not in canon]
-    return canon + sorted(extras, key=_natural_key)
-
-def _metric_column_name(metric_param: str):
-    m = (metric_param or "interacciones").strip().lower()
-    if m == "likes": return COL_LIKES
-    if m == "comentarios": return COL_COMENT
-    return "Interacciones"  # default
 
 # ============== APP ==============
 app = Flask(__name__)
@@ -324,7 +324,7 @@ def index():
 
   canvas { display:block; width:100%; }
   #likesPorCandidato, #comentPorCandidato, #candidatosTodos { min-height: 180px; }
-  #ganadoresStack { min-height: 200px; }
+  #ganadoresStack, #ganadoresDeltaStack { min-height: 200px; }
 
   .heatwrap{ overflow-x:auto; -webkit-overflow-scrolling: touch; }
   .heatwrap table{ min-width: 760px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
@@ -343,15 +343,447 @@ def index():
   <h1>Dashboard de Candidatos por Red</h1>
   <div class="sub">Elaborado por Angélica Méndez</div>
 
-  <!-- (tu HTML/JS original tal cual) -->
-  <!-- No se modifica para no romper nada. Los nuevos endpoints están listos en backend. -->
+  <div class="cards" id="kpis">
+    <div class="card"><div class="kpi">Filas analizadas</div><div class="val" id="kpiFilas"><span class="skeleton" style="width:80px;display:inline-block"></span></div></div>
+    <div class="card"><div class="kpi">Suma de likes promedio</div><div class="val" id="kpiLikes"><span class="skeleton" style="width:80px;display:inline-block"></span></div></div>
+    <div class="card"><div class="kpi">Suma de comentarios promedio</div><div class="val" id="kpiCom"><span class="skeleton" style="width:80px;display:inline-block"></span></div></div>
+    <div class="card"><div class="kpi">Candidatos únicos</div><div class="val" id="kpiCand"><span class="skeleton" style="width:80px;display:inline-block"></span></div></div>
+  </div>
+
+  <div class="panel">
+    <div class="filters">
+      <div>
+        <strong>Red(es):</strong><br>
+        <span id="chipsRed" class="chipwrap"><span class="skeleton" style="display:inline-block;width:200px"></span></span>
+      </div>
+
+      <div>
+        <strong>Tiempo:</strong><br>
+        <div style="font-size:12px;color:#6b7280;margin-bottom:4px">Semanas</div>
+        <span id="chipsSemana" class="chipwrap"><span class="skeleton" style="display:inline-block;width:220px"></span></span>
+        <div style="font-size:12px;color:#6b7280;margin:8px 0 4px">Meses</div>
+        <span id="chipsMes" class="chipwrap"><span class="skeleton" style="display:inline-block;width:160px"></span></span>
+      </div>
+
+      <div>
+        <strong>Espectro(s):</strong><br>
+        <span id="chipsEsp" class="chipwrap"><span class="skeleton" style="display:inline-block;width:200px"></span></span>
+      </div>
+
+      <div style="align-self:flex-end">
+        <button onclick="aplicar()">Aplicar</button>
+        <button onclick="limpiar()">Limpiar</button>
+      </div>
+    </div>
+
+    <div class="grid3">
+      <div class="panel">
+        <h3>Likes promedio por candidato (según filtros)</h3>
+        <canvas id="likesPorCandidato"></canvas>
+      </div>
+      <div class="panel">
+        <h3>Comentarios promedio por candidato (según filtros)</h3>
+        <canvas id="comentPorCandidato"></canvas>
+      </div>
+      <div class="panel">
+        <h3>Candidatos por promedio de interacciones a la semana (según filtros)</h3>
+        <canvas id="candidatosTodos"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:16px">
+    <h3>Ganadores por semana y espectro</h3>
+    <canvas id="ganadoresStack"></canvas>
+  </div>
+
+  <div class="panel" style="margin-top:16px">
+    <h3>Heatmap de interacciones (Candidato × Red)</h3>
+    <div id="heatmap"></div>
+  </div>
+
+  <div class="panel" style="margin-top:16px">
+    <div class="filters">
+      <h3 style="margin:0">Heatmaps semanales (Candidato × Semana)</h3>
+      <span style="flex:1"></span>
+      <label>Métrica:</label>
+      <select id="selMetric">
+        <option value="interacciones" selected>Interacciones</option>
+        <option value="likes">Likes</option>
+        <option value="comentarios">Comentarios</option>
+      </select>
+      <button onclick="redibujarSemanal()">Aplicar</button>
+    </div>
+    <div id="heatmapSemanal"></div>
+  </div>
+
+  <!-- >>> NUEVO (DELTA) : HEATMAP DE VARIACIÓN -->
+  <div class="panel" style="margin-top:16px">
+    <div class="filters">
+      <h3 style="margin:0">Variación semana a semana (Δ vs semana previa)</h3>
+      <span style="flex:1"></span>
+      <label>Métrica:</label>
+      <select id="selMetricDelta">
+        <option value="interacciones" selected>Interacciones</option>
+        <option value="likes">Likes</option>
+        <option value="comentarios">Comentarios</option>
+      </select>
+      <button onclick="redibujarDelta()">Aplicar</button>
+    </div>
+    <div id="deltaSemanal"></div>
+  </div>
+
+  <!-- >>> NUEVO (DELTA) : GANADOR POR VARIACIÓN -->
+  <div class="panel" style="margin-top:16px">
+    <h3>Ganadores por variación (Δ) por semana</h3>
+    <canvas id="ganadoresDeltaStack"></canvas>
+  </div>
 </div>
+
+<script>
+  const ESPECTRO_COLORS = {{ espectro_colors | tojson }};
+  const PALETTE = [
+    "rgba(99,102,241,0.55)","rgba(236,72,153,0.55)","rgba(34,197,94,0.55)","rgba(59,130,246,0.55)",
+    "rgba(234,179,8,0.55)","rgba(244,114,182,0.55)","rgba(16,185,129,0.55)","rgba(251,113,133,0.55)",
+    "rgba(96,165,250,0.55)","rgba(250,204,21,0.55)","rgba(147,197,253,0.55)","rgba(253,186,116,0.55)"
+  ];
+
+  const f1 = (v) => Number(v || 0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+
+  let REDES = [], SEMANAS = [], ESPECTROS = [], MESES = [];
+  const CH = { likes:null, coment:null, todos:null, winners:null, winnersDelta:null };
+
+  async function fetchJSON(url, fallback) {
+    try {
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) return fallback;
+      const text = await r.text();
+      if (!text) return fallback;
+      try { return JSON.parse(text); } catch { return fallback; }
+    } catch (e) {
+      return fallback;
+    }
+  }
+
+  function drawChart(ctx, cfg, key){ if (CH[key]) { try { CH[key].destroy(); } catch(e){} } CH[key] = new Chart(ctx, cfg); return CH[key]; }
+  function qs(name){ const u=new URL(window.location.href); return u.searchParams.get(name)||""; }
+  function qsmulti(name){ const v=qs(name); return v? v.split(",").map(s=>s.trim()).filter(Boolean) : []; }
+
+  function renderChips(containerId, items, qsParam){
+    const cont = document.getElementById(containerId);
+    const sel = new Set(qsmulti(qsParam));
+    cont.innerHTML = items.map(v => {
+      const checked = sel.has(v) ? 'checked' : '';
+      return `<label><input type="checkbox" name="${qsParam}" value="${v}" ${checked} /><span>${v}</span></label>`;
+    }).join('');
+  }
+  function getChipValues(name){ return Array.from(document.querySelectorAll('input[type=checkbox][name="'+name+'"]:checked')).map(i=>i.value); }
+
+  function setDynamicHeight(id,count){
+    const c = document.getElementById(id);
+    const espectroFiltrado = qsmulti('espectro').length > 0;
+    const rowHeight = espectroFiltrado ? 26 : 28;
+    const padding   = 40;
+    const rows = Math.max(count || 1, 1);
+    const h = Math.max(180, Math.min(rows * rowHeight + padding, 600));
+    c.height = h; c.width = (c.parentElement && c.parentElement.clientWidth) ? c.parentElement.clientWidth : 800;
+  }
+
+  async function bootstrap(){
+    const boot = await fetchJSON('/api/bootstrap', { redes:[], semanas:[], meses:[], espectros:[], kpis:{ filas:0, likes:0, coment:0, candidatos:0 } });
+    REDES = boot.redes || []; SEMANAS = boot.semanas || []; MESES = boot.meses || []; ESPECTROS = boot.espectros || [];
+    document.getElementById('kpiFilas').innerText = (boot.kpis.filas || 0).toLocaleString('es-ES');
+    document.getElementById('kpiLikes').innerText = (boot.kpis.likes || 0).toLocaleString('es-ES');
+    document.getElementById('kpiCom').innerText   = (boot.kpis.coment || 0).toLocaleString('es-ES');
+    document.getElementById('kpiCand').innerText  = (boot.kpis.candidatos || 0).toLocaleString('es-ES');
+    renderChips('chipsRed', REDES, 'red');
+    renderChips('chipsEsp', ESPECTROS, 'espectro');
+    renderChips('chipsSemana', SEMANAS, 'semana');
+    renderChips('chipsMes', MESES, 'mes');
+    await drawAll();
+  }
+
+  async function drawAll(){
+    const params = new URLSearchParams();
+    const reds = qsmulti('red'), esps = qsmulti('espectro'), weeks = qsmulti('semana'), months = qsmulti('mes');
+    if(reds.length) params.set('red', reds.join(',')); if(esps.length) params.set('espectro', esps.join(','));
+    if(weeks.length) params.set('semana', weeks.join(',')); if(months.length) params.set('mes', months.join(','));
+    if(qs('semana') && !weeks.length) params.set('semana', qs('semana'));
+
+    const likesCand = await fetchJSON('/api/likes-por-candidato?'+params.toString(), []);
+    const comCand   = await fetchJSON('/api/comentarios-por-candidato?'+params.toString(), []);
+    const todos     = await fetchJSON('/api/candidatos-todos?'+params.toString(), []);
+    const winners   = await fetchJSON('/api/ganador-semanal?'+params.toString(), []);
+    const winSeries = await fetchJSON('/api/ganador-semanal-series?'+params.toString(), { semanas:[], espectros:[], values:[] });
+    const matrix    = await fetchJSON('/api/heatmap?'+params.toString(), { rows:[], cols:[], values:[] });
+
+    setDynamicHeight('likesPorCandidato', likesCand.length);
+    setDynamicHeight('comentPorCandidato', comCand.length);
+    setDynamicHeight('candidatosTodos',   todos.length);
+
+    const baseOpts = { indexAxis:'y', responsive:false, maintainAspectRatio:false, animation:false,
+      plugins: { legend: { display:false } }, scales: { y: { ticks: { autoSkip:false } }, x:{ ticks:{ maxTicksLimit: 8, callback:(v)=>Number(v).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) } } } };
+    const espectroOn = qsmulti('espectro').length>0;
+    const barCfg = { barThickness: espectroOn ? 16 : 20, categoryPercentage: 0.9, barPercentage: 0.9 };
+
+    // Likes
+    new Chart(document.getElementById('likesPorCandidato').getContext('2d'), {
+      type: 'bar',
+      data: { labels: likesCand.map(d=>d.candidato),
+              datasets: [{ label: 'Likes promedio', data: likesCand.map(d=>d.likes),
+                backgroundColor: espectroOn ? likesCand.map(d=> ESPECTRO_COLORS[d.espectro] || "rgba(107,114,128,0.35)")
+                                             : Array.from({length:likesCand.length}, (_,i)=> ["rgba(99,102,241,0.55)","rgba(236,72,153,0.55)","rgba(34,197,94,0.55)","rgba(59,130,246,0.55)","rgba(234,179,8,0.55)","rgba(244,114,182,0.55)","rgba(16,185,129,0.55)","rgba(251,113,133,0.55)","rgba(96,165,250,0.55)","rgba(250,204,21,0.55)","rgba(147,197,253,0.55)","rgba(253,186,116,0.55)"][i % 12]),
+                ...barCfg }] },
+      options: baseOpts
+    });
+
+    // Comentarios
+    new Chart(document.getElementById('comentPorCandidato').getContext('2d'), {
+      type: 'bar',
+      data: { labels: comCand.map(d=>d.candidato),
+              datasets: [{ label: 'Comentarios promedio', data: comCand.map(d=>d.comentarios),
+                backgroundColor: espectroOn ? comCand.map(d=> ESPECTRO_COLORS[d.espectro] || "rgba(107,114,128,0.35)")
+                                            : Array.from({length:comCand.length}, (_,i)=> ["rgba(99,102,241,0.55)","rgba(236,72,153,0.55)","rgba(34,197,94,0.55)","rgba(59,130,246,0.55)","rgba(234,179,8,0.55)","rgba(244,114,182,0.55)","rgba(16,185,129,0.55)","rgba(251,113,133,0.55)","rgba(96,165,250,0.55)","rgba(250,204,21,0.55)","rgba(147,197,253,0.55)","rgba(253,186,116,0.55)"][i % 12]),
+                ...barCfg }] },
+      options: baseOpts
+    });
+
+    // Interacciones promedio/semana (tercera tarjeta)
+    new Chart(document.getElementById('candidatosTodos').getContext('2d'), {
+      type: 'bar',
+      data: { labels: todos.map(d=>d.candidato),
+              datasets: [{ label: 'Interacciones promedio/semana', data: todos.map(d=>d.likes), // aquí "likes" = interacciones
+                backgroundColor: espectroOn ? todos.map(d=> ESPECTRO_COLORS[d.espectro] || "rgba(107,114,128,0.35)")
+                                            : Array.from({length:todos.length}, (_,i)=> ["rgba(99,102,241,0.55)","rgba(236,72,153,0.55)","rgba(34,197,94,0.55)","rgba(59,130,246,0.55)","rgba(234,179,8,0.55)","rgba(244,114,182,0.55)","rgba(16,185,129,0.55)","rgba(251,113,133,0.55)","rgba(96,165,250,0.55)","rgba(250,204,21,0.55)","rgba(147,197,253,0.55)","rgba(253,186,116,0.55)"][i % 12]),
+                ...barCfg }] },
+      options: baseOpts
+    });
+
+    // Ganadores (interacciones absolutas)
+    const canvasStack = document.getElementById('ganadoresStack');
+    const ctxStack = canvasStack.getContext('2d');
+    const espsSel = qsmulti('espectro');
+
+    if (espsSel.length === 1) {
+      const esp = espsSel[0];
+      const w = winners.filter(x => x.espectro === esp).sort((a,b) => SEMANAS.indexOf(a.semana) - SEMANAS.indexOf(b.semana));
+      const labels = w.map(x => { const idx = SEMANAS.indexOf(x.semana); const p = idx>=0?`S${idx+1}. `:''; return `${p}${x.candidato || 'ND'}`; });
+      const data   = w.map(x => x.nd ? 0 : x.interacciones);
+      new Chart(ctxStack, {
+        type:'bar',
+        data:{ labels, datasets:[{ label:esp, data,
+          backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)', borderColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.55)',
+          borderWidth:1, barThickness:18, categoryPercentage:0.9, barPercentage:0.9 }] },
+        options:{ indexAxis:'y', responsive:false, maintainAspectRatio:false, animation:false,
+          plugins:{ legend:{ display:false }, tooltip:{ callbacks:{
+            title:(items)=>{const i=items[0].dataIndex; const sem=w[i]?.semana||''; return sem?`${sem}`:items[0].label; },
+            label:(ctx)=> Number(ctx.raw||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 })+' interacciones' } } },
+          scales:{ x:{ ticks:{ maxTicksLimit:8, callback:(v)=> Number(v||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) } }, y:{ ticks:{ autoSkip:false }, title:{ display:true, text:'Interacciones' } } } }
+      });
+    } else {
+      const stackDatasets = (winSeries.espectros || []).map(esp => ({
+        label: esp,
+        data: (winSeries.semanas || []).map(sem => {
+          const cell = (winSeries.values || []).find(v => v.espectro===esp && v.semana===sem);
+          return cell ? (cell.nd? 0 : cell.interacciones) : 0;
+        }),
+        backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)', borderColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.55)',
+        borderWidth: 0, barThickness: 18, categoryPercentage: 0.9, barPercentage: 0.9
+      }));
+      new Chart(ctxStack, {
+        type:'bar', data:{ labels:(winSeries.semanas||[]).map((s,i)=>'S'+(i+1)), datasets:stackDatasets },
+        options:{ indexAxis:'x', responsive:false, maintainAspectRatio:false, animation:false, plugins:{ legend:{ position:'top' } },
+          scales:{ x:{ stacked:true, ticks:{ autoSkip:false } }, y:{ stacked:true, title:{ display:true, text:'Interacciones (ganador por espectro)' },
+            ticks:{ callback:(v)=> Number(v||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) } } } }
+      });
+    }
+
+    // Heatmap general
+    const hm = document.getElementById('heatmap');
+    if(!matrix.values || !matrix.values.length) { hm.innerHTML = '<em>Sin datos.</em>'; }
+    else {
+      const rows = matrix.rows||[], cols = matrix.cols||[], vals = matrix.values||[];
+      const max = Math.max(...vals.map(v=>v.valor||0), 0);
+      let html = '<table><thead><tr><th></th>';
+      for (const col of cols) html += `<th>${col}</th>`;
+      html += '</tr></thead><tbody>';
+      for (const r of rows) {
+        html += `<tr><th>${r}</th>`;
+        for (const c of cols) {
+          const item = vals.find(v => v.candidato===r && v.red===c);
+          const v = item ? (item.valor||0) : 0;
+          const pct = max? (v/max) : 0;
+          const bg = `rgba(59,130,246,${0.08 + 0.6*pct})`;
+          const disp = item && item.nd ? 'ND' : (v ? Number(v||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '');
+          html += `<td class="cell" style="background:${bg}">${disp}</td>`;
+        }
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      hm.innerHTML = '<div class="heatwrap">' + html + '</div>';
+    }
+
+    await redibujarSemanal();
+    await redibujarDelta();
+    await dibujarGanadoresDelta();
+  }
+
+  async function aplicar(){
+    const u=new URL(window.location.href);
+    const reds = getChipValues('red'); const esps = getChipValues('espectro');
+    const weeks = getChipValues('semana'); const months = getChipValues('mes');
+    if(reds.length) u.searchParams.set('red', reds.join(',')); else u.searchParams.delete('red');
+    if(esps.length) u.searchParams.set('espectro', esps.join(',')); else u.searchParams.delete('espectro');
+    if(weeks.length) u.searchParams.set('semana', weeks.join(',')); else u.searchParams.delete('semana');
+    if(months.length) u.searchParams.set('mes', months.join(',')); else u.searchParams.delete('mes');
+    window.location.href = u.toString();
+  }
+  function limpiar(){
+    const u=new URL(window.location.href);
+    ['red','semana','mes','espectro'].forEach(p=>u.searchParams.delete(p));
+    window.location.href=u.toString();
+  }
+
+  async function redibujarSemanal(){
+    const metric = document.getElementById('selMetric').value;
+    const params = new URLSearchParams();
+    const reds = qsmulti('red'), esps = qsmulti('espectro'), weeks = qsmulti('semana'), months = qsmulti('mes');
+    if(reds.length) params.set('red', reds.join(',')); if(esps.length) params.set('espectro', esps.join(','));
+    if(weeks.length) params.set('semana', weeks.join(',')); if(months.length) params.set('mes', months.join(','));
+    params.set('metric', metric);
+
+    const m = await fetchJSON('/api/heatmap-semanal?'+params.toString(), { rows:[], cols:[], values:[] });
+    const el = document.getElementById('heatmapSemanal');
+    if(!m.values || !m.values.length){ el.innerHTML = '<em>Sin datos para los filtros/semana.</em>'; return; }
+    const rows = m.rows||[], cols = m.cols||[], vals = m.values||[];
+    const max = Math.max(...vals.map(v=>v.valor||0), 0);
+    const shortCols = cols.map((c,i)=> 'S'+(i+1));
+
+    let html = '<table><thead><tr><th></th>';
+    for (const sc of shortCols) html += `<th>${sc}</th>`;
+    html += '</tr></thead><tbody>';
+    for (let i=0;i<rows.length;i++){
+      const r = rows[i];
+      html += `<tr><th>${r}</th>`;
+      for (let j=0;j<cols.length;j++){
+        const c = cols[j];
+        const item = vals.find(v => v.candidato===r && v.semana===c);
+        const v = item ? (item.valor||0) : 0;
+        const pct = max? (v/max) : 0;
+        const bg = `rgba(234,88,12,${0.07 + 0.6*pct})`;
+        const disp = item && item.nd ? 'ND' : (v ? Number(v||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '');
+        html += `<td class="cell" style="background:${bg}">${disp}</td>`;
+      }
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    el.innerHTML = '<div class="heatwrap">' + html + '</div>';
+  }
+
+  // >>> NUEVO (DELTA) : HEATMAP VARIACIÓN
+  async function redibujarDelta(){
+    const metric = document.getElementById('selMetricDelta').value;
+    const params = new URLSearchParams();
+    const reds = qsmulti('red'), esps = qsmulti('espectro'), weeks = qsmulti('semana'), months = qsmulti('mes');
+    if(reds.length) params.set('red', reds.join(',')); if(esps.length) params.set('espectro', esps.join(','));
+    if(weeks.length) params.set('semana', weeks.join(',')); if(months.length) params.set('mes', months.join(','));
+    params.set('metric', metric);
+
+    const m = await fetchJSON('/api/variacion-semanal?'+params.toString(), { rows:[], cols:[], values:[] });
+    const el = document.getElementById('deltaSemanal');
+    if(!m.values || !m.values.length || !m.cols || m.cols.length===0){
+      el.innerHTML = '<em>Se necesitan al menos 2 semanas para calcular Δ.</em>';
+      return;
+    }
+
+    const rows = m.rows||[], cols = m.cols||[], vals = m.values||[];
+    const shortCols = cols.map((c,i)=> 'S'+(i+2)); // S2 = Δ(S2-S1)
+    const maxAbs = Math.max(...vals.map(v => Math.abs(v.delta||0)), 0) || 1;
+
+    let html = '<div class="heatwrap"><table><thead><tr><th></th>';
+    for (const sc of shortCols) html += `<th>${sc}</th>`;
+    html += '</tr></thead><tbody>';
+
+    for (const r of rows){
+      html += `<tr><th>${r}</th>`;
+      for (let j=0;j<cols.length;j++){
+        const c = cols[j];
+        const item = vals.find(v => (v.candidato+' ('+v.espectro+')')===r && v.semana===c);
+        if(!item || item.nd){
+          html += `<td class="cell" style="background:rgba(107,114,128,0.08)">ND</td>`;
+        } else {
+          const d = Number(item.delta||0);
+          const a = Math.min(Math.abs(d)/maxAbs, 1);
+          const bg = d >= 0 ? `rgba(34,197,94,${0.08 + 0.6*a})` : `rgba(239,68,68,${0.08 + 0.6*a})`;
+          const disp = (d===0) ? '0.0' : d.toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+          html += `<td class="cell" style="background:${bg}">${disp}</td>`;
+        }
+      }
+      html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+  }
+
+  // >>> NUEVO (DELTA) : GANADORES POR VARIACIÓN
+  async function dibujarGanadoresDelta(){
+    const params = new URLSearchParams();
+    const reds = qsmulti('red'), esps = qsmulti('espectro'), weeks = qsmulti('semana'), months = qsmulti('mes');
+    if(reds.length) params.set('red', reds.join(',')); if(esps.length) params.set('espectro', esps.join(','));
+    if(weeks.length) params.set('semana', weeks.join(',')); if(months.length) params.set('mes', months.join(','));
+
+    const winnersD   = await fetchJSON('/api/ganador-variacion?'+params.toString(), []);
+    const winDSeries = await fetchJSON('/api/ganador-variacion-series?'+params.toString(), { semanas:[], espectros:[], values:[] });
+
+    const canvas = document.getElementById('ganadoresDeltaStack');
+    const ctx = canvas.getContext('2d');
+    const espsSel = qsmulti('espectro');
+
+    if (espsSel.length === 1) {
+      const esp = espsSel[0];
+      const w = winnersD.filter(x => x.espectro === esp).sort((a,b) => (a.idx||0) - (b.idx||0));
+      const labels = w.map(x => `S${x.idx}: ${x.candidato || 'ND'}`);
+      const data   = w.map(x => x.nd ? 0 : x.delta);
+      drawChart(ctx, {
+        type:'bar',
+        data:{ labels, datasets:[{ label:`Δ ${esp}`, data,
+          backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)', borderColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.55)',
+          borderWidth:1, barThickness:18, categoryPercentage:0.9, barPercentage:0.9 }] },
+        options:{ indexAxis:'y', responsive:false, maintainAspectRatio:false, animation:false,
+          plugins:{ legend:{ display:false }, tooltip:{ callbacks:{
+            label:(ctx)=> (Number(ctx.raw||0)).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 })+' Δ' } } },
+          scales:{ x:{ ticks:{ maxTicksLimit:8, callback:(v)=> Number(v||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) } }, y:{ ticks:{ autoSkip:false } } } }
+      }, 'winnersDelta');
+    } else {
+      const stackDatasets = (winDSeries.espectros || []).map(esp => ({
+        label: esp,
+        data: (winDSeries.semanas || []).map((sem,i) => {
+          const cell = (winDSeries.values || []).find(v => v.espectro===esp && v.semana===sem);
+          return cell ? (cell.nd? 0 : cell.delta) : 0;
+        }),
+        backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)', borderColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.55)',
+        borderWidth: 0, barThickness: 18, categoryPercentage: 0.9, barPercentage: 0.9
+      }));
+      drawChart(ctx, {
+        type:'bar', data:{ labels:(winDSeries.semanas||[]).map((s,i)=>'S'+(i+1+1)), datasets:stackDatasets },
+        options:{ indexAxis:'x', responsive:false, maintainAspectRatio:false, animation:false, plugins:{ legend:{ position:'top' } },
+          scales:{ x:{ stacked:true, ticks:{ autoSkip:false } }, y:{ stacked:true, title:{ display:true, text:'Δ (ganador por espectro)' },
+            ticks:{ callback:(v)=> Number(v||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) } } } }
+      }, 'winnersDelta');
+    }
+  }
+
+  // Helpers del front
+  function getChipValues(name){ return Array.from(document.querySelectorAll('input[type=checkbox][name="'+name+'"]:checked')).map(i=>i.value); }
+
+  bootstrap();
+</script>
 </body>
 </html>
 '''
     return render_template_string(template, espectro_colors=espectro_colors)
 
-# ---------- Catch-all seguro ----------
+# ---------- Catch-all seguro (sirve el dashboard para rutas no API/health) ----------
 @app.route("/<path:subpath>", methods=["GET", "HEAD"])
 def catch_all(subpath):
     sp = subpath.strip().lower()
@@ -365,6 +797,7 @@ def api_bootstrap():
     df = load_all()
     redes     = sorted(df[COL_RED].dropna().unique().tolist()) if not df.empty else []
 
+    # Semanas visibles: prioriza equivalencia desde promedios (_SemanaEff)
     prom = load_promedios()
     if not prom.empty and "_SemanaEff" in prom.columns:
         semanas_raw = prom["_SemanaEff"].dropna().unique().tolist()
@@ -372,8 +805,10 @@ def api_bootstrap():
         semanas_raw = []
 
     if not semanas_raw and not df.empty:
+        # Fallback a etiquetas de las hojas semanales
         semanas_raw = df["Semana"].dropna().unique().tolist()
 
+    # Ordena por el orden fijo; si alguna no está en WEEK_ORDER, añádela al final
     present = [w for w in WEEK_ORDER if w in semanas_raw]
     extras  = [w for w in semanas_raw if w not in present]
     semanas = present + sorted(extras, key=_natural_key)
@@ -432,6 +867,7 @@ def api_candidatos_todos():
            .agg({PROM_COL_INTERSEM: "mean", PROM_COL_ESPECTRO: lambda s: s.mode().iat[0] if not s.mode().empty else s.dropna().iat[0] if s.dropna().size else None})
            .rename(columns={PROM_COL_INTERSEM: "interacciones", PROM_COL_CANDIDATO: "candidato", PROM_COL_ESPECTRO: "espectro"})
            .sort_values("interacciones", ascending=False))
+    # Reutilizamos la clave "likes" en el front; aquí contiene interacciones promedio/semana
     out = [{"candidato": r["candidato"], "espectro": r["espectro"], "likes": _r1(r["interacciones"])} for _, r in g.iterrows()]
     return jsonify(out)
 
@@ -537,185 +973,136 @@ def api_heatmap_semanal():
                 values.append({"candidato": r, "semana": c, "valor": _r1(sub[col].iloc[0]), "nd": False})
     return jsonify({"rows": rows, "cols": cols, "values": values})
 
-# ================== NUEVO: VARIACIÓN SEMANAL (Δ) ==================
-
-def _build_pivot_for_metric(df_filtered: pd.DataFrame, metric_col: str):
-    """
-    Devuelve:
-      - pivot: tabla candidatos x semanas con promedio de metric_col
-      - semanas_ordenadas: semanas (columnas) ordenadas según filtro/subconjunto presente
-      - espectro_por_candidato: mapeo candidato -> espectro (moda)
-    """
-    if df_filtered.empty:
-        return pd.DataFrame(), [], {}
-
-    # Semanas en el subset filtrado (respetando orden canónico + extras)
-    semanas_ordenadas = _ordered_weeks_from_df(df_filtered["Semana"])
-
-    # Promedio por candidato x semana (para esa métrica)
-    g = (df_filtered.groupby([COL_CANDIDATO, "Semana"], as_index=False)[metric_col]
-         .mean())
-
-    pivot = g.pivot_table(index=COL_CANDIDATO, columns="Semana", values=metric_col, aggfunc="mean")
-    # Asegura todas las columnas en el orden deseado
-    for s in semanas_ordenadas:
-        if s not in pivot.columns:
-            pivot[s] = pd.NA
-    pivot = pivot[semanas_ordenadas]
-
-    # Espectro por candidato (moda dentro del subset filtrado)
-    esp_map = (df_filtered.groupby(COL_CANDIDATO)[COL_ESPECTRO]
-               .agg(lambda s: s.mode().iat[0] if not s.mode().empty else s.dropna().iat[0] if s.dropna().size else None)
-               .to_dict())
-    return pivot, semanas_ordenadas, esp_map
-
+# >>> NUEVO (DELTA) : API VARIACIÓN HEATMAP
 @app.route("/api/variacion-semanal")
 def api_variacion_semanal():
-    """
-    Devuelve deltas por candidato entre semanas consecutivas del subconjunto filtrado.
-    Responde lista de dicts:
-      { candidato, espectro, from_semana, to_semana, delta, nd }
-    """
-    metric_col = _metric_column_name(request.args.get("metric"))
+    metric = (request.args.get("metric") or "interacciones").lower()
     df = aplicar_filtros(load_all())
     if df.empty:
-        return jsonify([])
+        return jsonify({"rows": [], "cols": [], "values": []})
 
-    pivot, semanas, esp_map = _build_pivot_for_metric(df, metric_col)
-    if not semanas or pivot.empty:
-        return jsonify([])
+    # Selección de métrica
+    if metric == "likes":
+        col = COL_LIKES
+    elif metric == "comentarios":
+        col = COL_COMENT
+    else:
+        col = "Interacciones"
 
-    out = []
-    # Calcula Δ entre columnas consecutivas (solo dentro del subconjunto presente/filtrado)
-    for i in range(1, len(semanas)):
-        s_prev, s_curr = semanas[i-1], semanas[i]
-        prev_vals = pd.to_numeric(pivot[s_prev], errors="coerce")
-        curr_vals = pd.to_numeric(pivot[s_curr], errors="coerce")
-        delta = curr_vals - prev_vals
+    # Semanas presentes ordenadas
+    weeks_raw = df["Semana"].dropna().unique().tolist()
+    weeks = [w for w in WEEK_ORDER if w in weeks_raw] + sorted([w for w in weeks_raw if w not in WEEK_ORDER], key=_natural_key)
+    if len(weeks) < 2:
+        return jsonify({"rows": [], "cols": [], "values": []})
 
-        for cand, d in delta.items():
-            if pd.isna(d):
-                out.append({
-                    "candidato": cand,
-                    "espectro": esp_map.get(cand),
-                    "from_semana": s_prev,
-                    "to_semana": s_curr,
-                    "delta": 0.0,
-                    "nd": True
-                })
+    # Agregación por candidato/espectro/semana
+    g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO, "Semana"], as_index=False)[col].mean())
+
+    # Wide y diff consecutiva
+    wide = g.pivot_table(index=[COL_CANDIDATO, COL_ESPECTRO], columns="Semana", values=col)
+    # asegurar columnas
+    for w in weeks:
+        if w not in wide.columns:
+            wide[w] = pd.NA
+    wide = wide[weeks]
+
+    deltas = wide.diff(axis=1)  # Δ(Sn - S(n-1))
+    cols = weeks[1:]
+
+    values = []
+    rows = [f"{idx[0]} ({idx[1]})" for idx in deltas.index]
+    for (cand, esp), row in deltas.iterrows():
+        for w in cols:
+            v = row.get(w, None)
+            if pd.isna(v):
+                values.append({"candidato": cand, "espectro": esp, "semana": w, "delta": 0, "nd": True, "up": None})
             else:
-                out.append({
-                    "candidato": cand,
-                    "espectro": esp_map.get(cand),
-                    "from_semana": s_prev,
-                    "to_semana": s_curr,
-                    "delta": _r1(d),
-                    "nd": False
-                })
-    # Orden útil: por to_semana y delta desc
-    out = sorted(out, key=lambda r: (semanas.index(r["to_semana"]), -(r["delta"] or 0)))
-    return jsonify(out)
+                dv = float(v)
+                values.append({"candidato": cand, "espectro": esp, "semana": w, "delta": _r1(dv), "nd": False, "up": dv > 0})
+    return jsonify({"rows": rows, "cols": cols, "values": values})
 
+# >>> NUEVO (DELTA) : API GANADOR POR VARIACIÓN (lista plana)
 @app.route("/api/ganador-variacion")
 def api_ganador_variacion():
-    """
-    Para cada ESPECTRO y cada salto consecutivo de semana (S1->S2, S2->S3, ...),
-    devuelve el candidato con MAYOR DELTA POSITIVO.
-    Si todos los deltas <= 0 en ese espectro/salto, retorna nd=True.
-    """
-    metric_col = _metric_column_name(request.args.get("metric"))
     df = aplicar_filtros(load_all())
     if df.empty:
         return jsonify([])
 
-    pivot, semanas, esp_map = _build_pivot_for_metric(df, metric_col)
-    if not semanas or len(semanas) < 2 or pivot.empty:
+    # Usamos Interacciones para el “ganador por variación” (más estable/representativo).
+    col = "Interacciones"
+
+    weeks_raw = df["Semana"].dropna().unique().tolist()
+    weeks = [w for w in WEEK_ORDER if w in weeks_raw] + sorted([w for w in weeks_raw if w not in WEEK_ORDER], key=_natural_key)
+    if len(weeks) < 2:
         return jsonify([])
 
-    espectros_presentes = sorted(df[COL_ESPECTRO].dropna().unique().tolist())
+    g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO, "Semana"], as_index=False)[col].mean())
+    wide = g.pivot_table(index=[COL_CANDIDATO, COL_ESPECTRO], columns="Semana", values=col)
+    for w in weeks:
+        if w not in wide.columns:
+            wide[w] = pd.NA
+    wide = wide[weeks]
+    deltas = wide.diff(axis=1)
+    cols = weeks[1:]
+
     out = []
-    for i in range(1, len(semanas)):
-        s_prev, s_curr = semanas[i-1], semanas[i]
-        prev_vals = pd.to_numeric(pivot[s_prev], errors="coerce")
-        curr_vals = pd.to_numeric(pivot[s_curr], errors="coerce")
-        delta = (curr_vals - prev_vals).rename("delta")
-
-        # tabla para buscar por espectro
-        tmp = pd.concat([delta], axis=1)
-        tmp["candidato"] = tmp.index
-        tmp["espectro"] = tmp["candidato"].map(esp_map)
-
-        for esp in espectros_presentes:
-            t = tmp[tmp["espectro"] == esp].copy()
-            t = t[pd.to_numeric(t["delta"], errors="coerce").notna()]
-            if t.empty:
-                out.append({"from_semana": s_prev, "to_semana": s_curr, "espectro": esp,
-                            "candidato": None, "delta": 0.0, "nd": True})
-                continue
-            # mayor delta positivo
-            idx = t["delta"].idxmax()
-            best = t.loc[idx]
-            if float(best["delta"]) <= 0:
-                out.append({"from_semana": s_prev, "to_semana": s_curr, "espectro": esp,
-                            "candidato": None, "delta": 0.0, "nd": True})
+    # espectros presentes tras filtros (si no se filtró, usa todos)
+    espectros = sorted(df[COL_ESPECTRO].dropna().unique().tolist())
+    for j, w in enumerate(cols, start=1):
+        # índice S# (S2 = Δ vs S1, etc.)
+        idx = j + 1
+        for esp in espectros:
+            # filtra filas del espectro
+            sub = deltas.loc[(deltas.index.get_level_values(1) == esp)]
+            if sub.empty:
+                out.append({"semana": w, "idx": idx, "espectro": esp, "candidato": None, "delta": 0.0, "nd": True})
             else:
-                out.append({"from_semana": s_prev, "to_semana": s_curr, "espectro": esp,
-                            "candidato": best["candidato"], "delta": _r1(best["delta"]), "nd": False})
+                series = sub[w].dropna()
+                if series.empty:
+                    out.append({"semana": w, "idx": idx, "espectro": esp, "candidato": None, "delta": 0.0, "nd": True})
+                else:
+                    # ganador por mayor Δ (permitimos Δ negativo si todos caen)
+                    best_idx = series.idxmax()
+                    best_val = float(series.loc[best_idx])
+                    cand = best_idx[0] if isinstance(best_idx, tuple) else str(best_idx)
+                    out.append({"semana": w, "idx": idx, "espectro": esp, "candidato": cand, "delta": _r1(best_val), "nd": False})
     return jsonify(out)
 
+# >>> NUEVO (DELTA) : API GANADOR POR VARIACIÓN (series para gráfico apilado)
 @app.route("/api/ganador-variacion-series")
 def api_ganador_variacion_series():
-    """
-    Estructura tipo 'series' para pintar rápido:
-    {
-      "saltos": [ "S1→S2", "S2→S3", ... ],
-      "espectros": [ ... ],
-      "values": [
-         { "salto":"S1→S2", "espectro":"Derecha", "delta": 123.4, "nd":false, "candidato":"X" },
-         ...
-      ]
-    }
-    """
-    metric_col = _metric_column_name(request.args.get("metric"))
     df = aplicar_filtros(load_all())
     if df.empty:
-        return jsonify({"saltos": [], "espectros": [], "values": []})
+        return jsonify({"semanas": [], "espectros": [], "values": []})
 
-    pivot, semanas, esp_map = _build_pivot_for_metric(df, metric_col)
-    if not semanas or len(semanas) < 2 or pivot.empty:
-        return jsonify({"saltos": [], "espectros": [], "values": []})
+    col = "Interacciones"
+    weeks_raw = df["Semana"].dropna().unique().tolist()
+    weeks = [w for w in WEEK_ORDER if w in weeks_raw] + sorted([w for w in weeks_raw if w not in WEEK_ORDER], key=_natural_key)
+    if len(weeks) < 2:
+        return jsonify({"semanas": [], "espectros": [], "values": []})
 
-    espectros_presentes = sorted(df[COL_ESPECTRO].dropna().unique().tolist())
-    saltos = []
+    espectros = sorted(df[COL_ESPECTRO].dropna().unique().tolist())
+
+    g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO, "Semana"], as_index=False)[col].mean())
+    wide = g.pivot_table(index=[COL_CANDIDATO, COL_ESPECTRO], columns="Semana", values=col)
+    for w in weeks:
+        if w not in wide.columns:
+            wide[w] = pd.NA
+    wide = wide[weeks]
+    deltas = wide.diff(axis=1)
+    cols = weeks[1:]
+
     values = []
-
-    for i in range(1, len(semanas)):
-        s_prev, s_curr = semanas[i-1], semanas[i]
-        label_salto = f"{s_prev}→{s_curr}"
-        saltos.append(label_salto)
-
-        prev_vals = pd.to_numeric(pivot[s_prev], errors="coerce")
-        curr_vals = pd.to_numeric(pivot[s_curr], errors="coerce")
-        delta = (curr_vals - prev_vals).rename("delta")
-
-        tmp = pd.concat([delta], axis=1)
-        tmp["candidato"] = tmp.index
-        tmp["espectro"] = tmp["candidato"].map(esp_map)
-
-        for esp in espectros_presentes:
-            t = tmp[tmp["espectro"] == esp].copy()
-            t = t[pd.to_numeric(t["delta"], errors="coerce").notna()]
-            if t.empty:
-                values.append({"salto": label_salto, "espectro": esp, "delta": 0.0, "nd": True})
-                continue
-            idx = t["delta"].idxmax()
-            best = t.loc[idx]
-            if float(best["delta"]) <= 0:
-                values.append({"salto": label_salto, "espectro": esp, "delta": 0.0, "nd": True})
+    for w in cols:
+        for esp in espectros:
+            sub = deltas.loc[(deltas.index.get_level_values(1) == esp)]
+            if sub.empty or sub[w].dropna().empty:
+                values.append({"semana": w, "espectro": esp, "delta": 0.0, "nd": True})
             else:
-                values.append({"salto": label_salto, "espectro": esp, "delta": _r1(best["delta"]), "nd": False, "candidato": best["candidato"]})
-
-    return jsonify({"saltos": saltos, "espectros": espectros_presentes, "values": values})
+                best_idx = sub[w].idxmax()
+                best_val = float(sub[w].loc[best_idx])
+                values.append({"semana": w, "espectro": esp, "delta": _r1(best_val), "nd": False})
+    return jsonify({"semanas": cols, "espectros": espectros, "values": values})
 
 # === Health checks para Render ===
 @app.route("/health", methods=["GET", "HEAD"])
