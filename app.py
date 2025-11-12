@@ -38,10 +38,13 @@ WEEK_MAP = {
     "Semana 5": "9 Oct - 15 Oct",
     "Semana 6": "16 Oct - 22 Oct",
     "Semana 7": "23 Oct - 28 Oct",
-    "Semana 8": "29Oct-05Nov"
-“Semana 9": "23 Oct - 28 Oct"
-    "Semana 10": "Nov 05 – Nov 12”
+    "Semana 8": "29 Oct - 05 Nov",
+    # OJO: ajusta estas dos si tus fechas reales son otras.
+    "Semana 9": "06 Nov - 12 Nov",
+    "Semana 10": "13 Nov - 19 Nov",
+}
 WEEK_ORDER = list(WEEK_MAP.values())
+
 
 # === Utils ===
 def _natural_key(s):
