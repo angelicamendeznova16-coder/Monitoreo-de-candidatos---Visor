@@ -38,7 +38,7 @@ WEEK_MAP = {
     "Semana 5": "9 Oct - 15 Oct",
     "Semana 6": "16 Oct - 22 Oct",
     "Semana 7": "23 Oct - 28 Oct",
-    # Semana 8 y 9 se manejarán como "extras" si no se asigna etiqueta aquí
+    # Semana 8 y 9 existen en tu Excel; si quieres etiquetas, añádelas aquí.
 }
 WEEK_ORDER = list(WEEK_MAP.values())
 
@@ -150,7 +150,7 @@ def _normalize_week_strict(s: str):
     # Normaliza espacios
     s2 = re.sub(r"\s+", " ", s1)
 
-    # Caso rango con mes inicial y día final SIN mes (ej: '7 Sep - 14')
+    # Caso rango con mes inicial y día final SIN mes
     m2 = re.match(r"^\s*(\d{1,2})\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{3,})\s*-\s*(\d{1,2})\s*$", s2)
     if m2:
         d1, mtxt, d2 = m2.groups()
@@ -159,9 +159,9 @@ def _normalize_week_strict(s: str):
         for off in WEEK_ORDER:
             if re.sub(r"\s+", " ", off).lower() == re.sub(r"\s+", " ", candidate).lower():
                 return off
-        return candidate  # al menos completamos el mes final
+        return candidate
 
-    # Caso rango completo (ej: '7 Sep - 14 Sep' o '23 Sep - 1 Oct')
+    # Caso rango completo
     m3 = re.match(r"^\s*\d{1,2}\s*[A-Za-z].*-\s*\d{1,2}\s*[A-Za-z].*\s*$", s2)
     if m3:
         for off in WEEK_ORDER:
@@ -169,7 +169,6 @@ def _normalize_week_strict(s: str):
                 return off
         return s2
 
-    # Fallback: no romper datos
     return s1
 
 # ---------- CARGA DE LA HOJA DE PROMEDIOS ----------
@@ -207,7 +206,7 @@ def _load_promedios_cached(_key):
         if numc in df.columns:
             df[numc] = _sanitize_numeric(df[numc])
 
-    # Filtrado mínimo (NO descartamos por _SemanaEff para no perder datos)
+    # Filtrado mínimo
     df = df[df[PROM_COL_CANDIDATO].notna() & df[PROM_COL_RED].notna()]
     return df
 
@@ -324,7 +323,7 @@ def index():
 
   canvas { display:block; width:100%; }
   #likesPorCandidato, #comentPorCandidato, #candidatosTodos { min-height: 180px; }
-  #ganadoresStack, #ganadoresDelta { min-height: 200px; }
+  #ganadoresStack, #ganadoresDeltaStack { min-height: 200px; }
 
   .heatwrap{ overflow-x:auto; -webkit-overflow-scrolling: touch; }
   .heatwrap table{ min-width: 760px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
@@ -417,7 +416,7 @@ def index():
     <div id="heatmapSemanal"></div>
   </div>
 
-  <!-- NUEVO: variación semana a semana -->
+  <!-- >>> NUEVO (DELTA) : HEATMAP DE VARIACIÓN -->
   <div class="panel" style="margin-top:16px">
     <div class="filters">
       <h3 style="margin:0">Variación semana a semana (Δ vs semana previa)</h3>
@@ -433,12 +432,11 @@ def index():
     <div id="deltaSemanal"></div>
   </div>
 
-  <!-- NUEVO: Ganador por variación -->
+  <!-- >>> NUEVO (DELTA) : GANADOR POR VARIACIÓN -->
   <div class="panel" style="margin-top:16px">
-    <h3>Ganador por variación (mayor salto + por semana)</h3>
-    <canvas id="ganadoresDelta"></canvas>
+    <h3>Ganadores por variación (Δ) por semana</h3>
+    <canvas id="ganadoresDeltaStack"></canvas>
   </div>
-
 </div>
 
 <script>
@@ -452,7 +450,7 @@ def index():
   const f1 = (v) => Number(v || 0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
   let REDES = [], SEMANAS = [], ESPECTROS = [], MESES = [];
-  const CH = { likes:null, coment:null, todos:null, winners:null, delta:null, winnersDelta:null };
+  const CH = { likes:null, coment:null, todos:null, winners:null, winnersDelta:null };
 
   async function fetchJSON(url, fallback) {
     try {
@@ -466,6 +464,7 @@ def index():
     }
   }
 
+  function drawChart(ctx, cfg, key){ if (CH[key]) { try { CH[key].destroy(); } catch(e){} } CH[key] = new Chart(ctx, cfg); return CH[key]; }
   function qs(name){ const u=new URL(window.location.href); return u.searchParams.get(name)||""; }
   function qsmulti(name){ const v=qs(name); return v? v.split(",").map(s=>s.trim()).filter(Boolean) : []; }
 
@@ -559,7 +558,7 @@ def index():
       options: baseOpts
     });
 
-    // Ganadores
+    // Ganadores (interacciones absolutas)
     const canvasStack = document.getElementById('ganadoresStack');
     const ctxStack = canvasStack.getContext('2d');
     const espsSel = qsmulti('espectro');
@@ -625,7 +624,7 @@ def index():
 
     await redibujarSemanal();
     await redibujarDelta();
-    await dibujarGanadorDelta();
+    await dibujarGanadoresDelta();
   }
 
   async function aplicar(){
@@ -680,7 +679,7 @@ def index():
     el.innerHTML = '<div class="heatwrap">' + html + '</div>';
   }
 
-  // NUEVO: variación Δ vs semana previa
+  // >>> NUEVO (DELTA) : HEATMAP VARIACIÓN
   async function redibujarDelta(){
     const metric = document.getElementById('selMetricDelta').value;
     const params = new URLSearchParams();
@@ -695,8 +694,9 @@ def index():
       el.innerHTML = '<em>Se necesitan al menos 2 semanas para calcular Δ.</em>';
       return;
     }
+
     const rows = m.rows||[], cols = m.cols||[], vals = m.values||[];
-    const shortCols = cols.map((c,i)=> 'S'+(i+2));
+    const shortCols = cols.map((c,i)=> 'S'+(i+2)); // S2 = Δ(S2-S1)
     const maxAbs = Math.max(...vals.map(v => Math.abs(v.delta||0)), 0) || 1;
 
     let html = '<div class="heatwrap"><table><thead><tr><th></th>';
@@ -724,53 +724,56 @@ def index():
     el.innerHTML = html;
   }
 
-  // NUEVO: ganador por variación
-  async function dibujarGanadorDelta(){
+  // >>> NUEVO (DELTA) : GANADORES POR VARIACIÓN
+  async function dibujarGanadoresDelta(){
     const params = new URLSearchParams();
     const reds = qsmulti('red'), esps = qsmulti('espectro'), weeks = qsmulti('semana'), months = qsmulti('mes');
     if(reds.length) params.set('red', reds.join(',')); if(esps.length) params.set('espectro', esps.join(','));
     if(weeks.length) params.set('semana', weeks.join(',')); if(months.length) params.set('mes', months.join(','));
 
-    const soloUnEsp = esps.length === 1;
-    if(soloUnEsp){
-      const data = await fetchJSON('/api/ganador-variacion?'+params.toString(), []);
-      const canvas = document.getElementById('ganadoresDelta');
-      const ctx = canvas.getContext('2d');
-      const orden = (a,b)=> (SEMANAS.indexOf(a.semana)-SEMANAS.indexOf(b.semana));
-      const w = data.sort(orden);
-      const labels = w.map(x => { const idx = SEMANAS.indexOf(x.semana); const p = idx>=0?`S${idx+1}. `:''; return `${p}${x.candidato || 'ND'}`; });
-      const vals = w.map(x => x.nd ? 0 : x.delta);
-      if (CH.winnersDelta) { try { CH.winnersDelta.destroy(); } catch(e){} }
-      CH.winnersDelta = new Chart(ctx, {
+    const winnersD   = await fetchJSON('/api/ganador-variacion?'+params.toString(), []);
+    const winDSeries = await fetchJSON('/api/ganador-variacion-series?'+params.toString(), { semanas:[], espectros:[], values:[] });
+
+    const canvas = document.getElementById('ganadoresDeltaStack');
+    const ctx = canvas.getContext('2d');
+    const espsSel = qsmulti('espectro');
+
+    if (espsSel.length === 1) {
+      const esp = espsSel[0];
+      const w = winnersD.filter(x => x.espectro === esp).sort((a,b) => (a.idx||0) - (b.idx||0));
+      const labels = w.map(x => `S${x.idx}: ${x.candidato || 'ND'}`);
+      const data   = w.map(x => x.nd ? 0 : x.delta);
+      drawChart(ctx, {
         type:'bar',
-        data:{ labels, datasets:[{ label: esps[0] + ' (Δ)', data: vals,
-          backgroundColor: ESPECTRO_COLORS[esps[0]] || 'rgba(107,114,128,0.35)' }]},
+        data:{ labels, datasets:[{ label:`Δ ${esp}`, data,
+          backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)', borderColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.55)',
+          borderWidth:1, barThickness:18, categoryPercentage:0.9, barPercentage:0.9 }] },
         options:{ indexAxis:'y', responsive:false, maintainAspectRatio:false, animation:false,
           plugins:{ legend:{ display:false }, tooltip:{ callbacks:{
-            label:(ctx)=> (Number(ctx.raw||0)>=0?'+':'')+Number(ctx.raw||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) } } },
-          scales:{ x:{ ticks:{ callback:(v)=> (Number(v)>=0?'+':'')+Number(v||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) } }, y:{ ticks:{ autoSkip:false } } } }
-      });
+            label:(ctx)=> (Number(ctx.raw||0)).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 })+' Δ' } } },
+          scales:{ x:{ ticks:{ maxTicksLimit:8, callback:(v)=> Number(v||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) } }, y:{ ticks:{ autoSkip:false } } } }
+      }, 'winnersDelta');
     } else {
-      const series = await fetchJSON('/api/ganador-variacion-series?'+params.toString(), { semanas:[], espectros:[], values:[] });
-      const canvas = document.getElementById('ganadoresDelta');
-      const ctx = canvas.getContext('2d');
-      const datasets = (series.espectros || []).map(esp => ({
-        label: esp + ' (Δ)',
-        data: (series.semanas || []).map(sem => {
-          const cell = (series.values || []).find(v => v.espectro===esp && v.semana===sem);
+      const stackDatasets = (winDSeries.espectros || []).map(esp => ({
+        label: esp,
+        data: (winDSeries.semanas || []).map((sem,i) => {
+          const cell = (winDSeries.values || []).find(v => v.espectro===esp && v.semana===sem);
           return cell ? (cell.nd? 0 : cell.delta) : 0;
         }),
-        backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)'
+        backgroundColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.35)', borderColor: ESPECTRO_COLORS[esp] || 'rgba(107,114,128,0.55)',
+        borderWidth: 0, barThickness: 18, categoryPercentage: 0.9, barPercentage: 0.9
       }));
-      if (CH.winnersDelta) { try { CH.winnersDelta.destroy(); } catch(e){} }
-      CH.winnersDelta = new Chart(ctx, {
-        type:'bar', data:{ labels:(series.semanas||[]).map((s,i)=>'S'+(i+1)), datasets },
+      drawChart(ctx, {
+        type:'bar', data:{ labels:(winDSeries.semanas||[]).map((s,i)=>'S'+(i+1+1)), datasets:stackDatasets },
         options:{ indexAxis:'x', responsive:false, maintainAspectRatio:false, animation:false, plugins:{ legend:{ position:'top' } },
-          scales:{ x:{ stacked:true, ticks:{ autoSkip:false } }, y:{ stacked:true,
-            ticks:{ callback:(v)=> (Number(v)>=0?'+':'')+Number(v||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) } } } }
-      });
+          scales:{ x:{ stacked:true, ticks:{ autoSkip:false } }, y:{ stacked:true, title:{ display:true, text:'Δ (ganador por espectro)' },
+            ticks:{ callback:(v)=> Number(v||0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) } } } }
+      }, 'winnersDelta');
     }
   }
+
+  // Helpers del front
+  function getChipValues(name){ return Array.from(document.querySelectorAll('input[type=checkbox][name="'+name+'"]:checked')).map(i=>i.value); }
 
   bootstrap();
 </script>
@@ -969,7 +972,7 @@ def api_heatmap_semanal():
                 values.append({"candidato": r, "semana": c, "valor": _r1(sub[col].iloc[0]), "nd": False})
     return jsonify({"rows": rows, "cols": cols, "values": values})
 
-# ======= NUEVO: Variación semana a semana (Δ vs semana previa) =======
+# >>> NUEVO (DELTA) : API VARIACIÓN HEATMAP
 @app.route("/api/variacion-semanal")
 def api_variacion_semanal():
     metric = (request.args.get("metric") or "interacciones").lower()
@@ -985,27 +988,28 @@ def api_variacion_semanal():
     else:
         col = "Interacciones"
 
-    # Semanas presentes en el DF filtrado, ordenadas.
+    # Semanas presentes ordenadas
     weeks_raw = df["Semana"].dropna().unique().tolist()
     weeks = [w for w in WEEK_ORDER if w in weeks_raw] + sorted([w for w in weeks_raw if w not in WEEK_ORDER], key=_natural_key)
     if len(weeks) < 2:
         return jsonify({"rows": [], "cols": [], "values": []})
 
-    # Agregar por candidato/espectro/semana
+    # Agregación por candidato/espectro/semana
     g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO, "Semana"], as_index=False)[col].mean())
 
-    # Wide y diff por columnas (consecutivas)
+    # Wide y diff consecutiva
     wide = g.pivot_table(index=[COL_CANDIDATO, COL_ESPECTRO], columns="Semana", values=col)
+    # asegurar columnas
     for w in weeks:
         if w not in wide.columns:
             wide[w] = pd.NA
     wide = wide[weeks]
-    deltas = wide.diff(axis=1)  # S2 - S1, S3 - S2, ...
 
-    cols = weeks[1:]  # semanas destino del Δ (comparadas vs anterior)
-    rows = [f"{idx[0]} ({idx[1]})" for idx in deltas.index]
+    deltas = wide.diff(axis=1)  # Δ(Sn - S(n-1))
+    cols = weeks[1:]
 
     values = []
+    rows = [f"{idx[0]} ({idx[1]})" for idx in deltas.index]
     for (cand, esp), row in deltas.iterrows():
         for w in cols:
             v = row.get(w, None)
@@ -1016,104 +1020,88 @@ def api_variacion_semanal():
                 values.append({"candidato": cand, "espectro": esp, "semana": w, "delta": _r1(dv), "nd": False, "up": dv > 0})
     return jsonify({"rows": rows, "cols": cols, "values": values})
 
-# ======= NUEVO: Ganador por variación (mayor salto + por semana) =======
-def _calc_variacion_base(metric_col):
-    """Devuelve (weeks, espectros, df_deltas_largo) usando el DF ya filtrado."""
+# >>> NUEVO (DELTA) : API GANADOR POR VARIACIÓN (lista plana)
+@app.route("/api/ganador-variacion")
+def api_ganador_variacion():
     df = aplicar_filtros(load_all())
     if df.empty:
-        return [], [], pd.DataFrame(columns=[COL_CANDIDATO, COL_ESPECTRO, "Semana", "delta", "nd"])
+        return jsonify([])
 
-    # Semanas ordenadas dentro del filtro actual
+    # Usamos Interacciones para el “ganador por variación” (más estable/representativo).
+    col = "Interacciones"
+
     weeks_raw = df["Semana"].dropna().unique().tolist()
     weeks = [w for w in WEEK_ORDER if w in weeks_raw] + sorted([w for w in weeks_raw if w not in WEEK_ORDER], key=_natural_key)
     if len(weeks) < 2:
-        return weeks, [], pd.DataFrame(columns=[COL_CANDIDATO, COL_ESPECTRO, "Semana", "delta", "nd"])
+        return jsonify([])
 
-    g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO, "Semana"], as_index=False)[metric_col].mean())
-    wide = g.pivot_table(index=[COL_CANDIDATO, COL_ESPECTRO], columns="Semana", values=metric_col)
+    g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO, "Semana"], as_index=False)[col].mean())
+    wide = g.pivot_table(index=[COL_CANDIDATO, COL_ESPECTRO], columns="Semana", values=col)
     for w in weeks:
         if w not in wide.columns:
             wide[w] = pd.NA
     wide = wide[weeks]
-    deltas = wide.diff(axis=1)  # columnas: weeks, Δ desde la anterior
-    # Pasamos a largo
-    long_rows = []
-    for (cand, esp), row in deltas.iterrows():
-        for i in range(1, len(weeks)):
-            w = weeks[i]
-            v = row.iloc[i]
-            if pd.isna(v):
-                long_rows.append({COL_CANDIDATO: cand, COL_ESPECTRO: esp, "Semana": w, "delta": 0.0, "nd": True})
-            else:
-                long_rows.append({COL_CANDIDATO: cand, COL_ESPECTRO: esp, "Semana": w, "delta": float(v), "nd": False})
-    long_df = pd.DataFrame(long_rows)
-    espectros = sorted(df[COL_ESPECTRO].dropna().unique().tolist())
-    return weeks, espectros, long_df
-
-@app.route("/api/ganador-variacion")
-def api_ganador_variacion():
-    # usa Interacciones por defecto (como el heatmap de Δ)
-    metric = (request.args.get("metric") or "interacciones").lower()
-    if metric == "likes":
-        col = COL_LIKES
-    elif metric == "comentarios":
-        col = COL_COMENT
-    else:
-        col = "Interacciones"
-
-    weeks, espectros, long_df = _calc_variacion_base(col)
-    if not len(weeks) or long_df.empty:
-        return jsonify([])
-
-    # Si hay un espectro explícito, lo filtramos, si no, devolvemos por el único espectro seleccionado en UI
-    espectros_q = _parse_multi((request.args.get("espectro") or "").strip())
-    if espectros_q:
-        long_df = long_df[long_df[COL_ESPECTRO].astype(str).str.lower().isin({e.lower() for e in espectros_q})]
+    deltas = wide.diff(axis=1)
+    cols = weeks[1:]
 
     out = []
-    for w in weeks[1:]:
-        sub = long_df[long_df["Semana"] == w]
-        if sub.empty:
-            out.append({"semana": w, "candidato": None, "espectro": None, "delta": 0.0, "nd": True})
-        else:
-            # ganador por Δ positivo máximo (si todo <=0, igual mostramos el máximo)
-            idx = sub["delta"].idxmax()
-            row = sub.loc[idx]
-            out.append({
-                "semana": w,
-                "candidato": row[COL_CANDIDATO],
-                "espectro": row[COL_ESPECTRO],
-                "delta": _r1(row["delta"]),
-                "nd": bool(row["nd"])
-            })
+    # espectros presentes tras filtros (si no se filtró, usa todos)
+    espectros = sorted(df[COL_ESPECTRO].dropna().unique().tolist())
+    for j, w in enumerate(cols, start=1):
+        # índice S# (S2 = Δ vs S1, etc.)
+        idx = j + 1
+        for esp in espectros:
+            # filtra filas del espectro
+            sub = deltas.loc[(deltas.index.get_level_values(1) == esp)]
+            if sub.empty:
+                out.append({"semana": w, "idx": idx, "espectro": esp, "candidato": None, "delta": 0.0, "nd": True})
+            else:
+                series = sub[w].dropna()
+                if series.empty:
+                    out.append({"semana": w, "idx": idx, "espectro": esp, "candidato": None, "delta": 0.0, "nd": True})
+                else:
+                    # ganador por mayor Δ (permitimos Δ negativo si todos caen)
+                    best_idx = series.idxmax()
+                    best_val = float(series.loc[best_idx])
+                    cand = best_idx[0] if isinstance(best_idx, tuple) else str(best_idx)
+                    out.append({"semana": w, "idx": idx, "espectro": esp, "candidato": cand, "delta": _r1(best_val), "nd": False})
     return jsonify(out)
 
+# >>> NUEVO (DELTA) : API GANADOR POR VARIACIÓN (series para gráfico apilado)
 @app.route("/api/ganador-variacion-series")
 def api_ganador_variacion_series():
-    metric = (request.args.get("metric") or "interacciones").lower()
-    if metric == "likes":
-        col = COL_LIKES
-    elif metric == "comentarios":
-        col = COL_COMENT
-    else:
-        col = "Interacciones"
-
-    weeks, espectros, long_df = _calc_variacion_base(col)
-    if not len(weeks) or long_df.empty:
+    df = aplicar_filtros(load_all())
+    if df.empty:
         return jsonify({"semanas": [], "espectros": [], "values": []})
 
+    col = "Interacciones"
+    weeks_raw = df["Semana"].dropna().unique().tolist()
+    weeks = [w for w in WEEK_ORDER if w in weeks_raw] + sorted([w for w in weeks_raw if w not in WEEK_ORDER], key=_natural_key)
+    if len(weeks) < 2:
+        return jsonify({"semanas": [], "espectros": [], "values": []})
+
+    espectros = sorted(df[COL_ESPECTRO].dropna().unique().tolist())
+
+    g = (df.groupby([COL_CANDIDATO, COL_ESPECTRO, "Semana"], as_index=False)[col].mean())
+    wide = g.pivot_table(index=[COL_CANDIDATO, COL_ESPECTRO], columns="Semana", values=col)
+    for w in weeks:
+        if w not in wide.columns:
+            wide[w] = pd.NA
+    wide = wide[weeks]
+    deltas = wide.diff(axis=1)
+    cols = weeks[1:]
+
     values = []
-    for w in weeks[1:]:
+    for w in cols:
         for esp in espectros:
-            sub = long_df[(long_df["Semana"] == w) & (long_df[COL_ESPECTRO] == esp)]
-            if sub.empty:
+            sub = deltas.loc[(deltas.index.get_level_values(1) == esp)]
+            if sub.empty or sub[w].dropna().empty:
                 values.append({"semana": w, "espectro": esp, "delta": 0.0, "nd": True})
             else:
-                idx = sub["delta"].idxmax()
-                row = sub.loc[idx]
-                values.append({"semana": w, "espectro": esp, "delta": _r1(row["delta"]), "nd": bool(row["nd"]), "candidato": row[COL_CANDIDATO]})
-    # weeks[1:] porque Δ empieza en la segunda semana del conjunto
-    return jsonify({"semanas": weeks[1:], "espectros": espectros, "values": values})
+                best_idx = sub[w].idxmax()
+                best_val = float(sub[w].loc[best_idx])
+                values.append({"semana": w, "espectro": esp, "delta": _r1(best_val), "nd": False})
+    return jsonify({"semanas": cols, "espectros": espectros, "values": values})
 
 # === Health checks para Render ===
 @app.route("/health", methods=["GET", "HEAD"])
@@ -1121,6 +1109,15 @@ def api_ganador_variacion_series():
 @app.route("/healthcheck", methods=["GET", "HEAD"])
 def health():
     return ("ok", 200, {"Content-Type": "text/plain; charset=utf-8"})
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+
+# Health-check duplicado (se mantiene como en tu archivo original)
+@app.route("/health")
+def health_dup():
+    return "ok", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
