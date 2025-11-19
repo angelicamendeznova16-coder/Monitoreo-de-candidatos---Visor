@@ -41,7 +41,7 @@ WEEK_MAP = {
     "Semana 8": "29 Oct - 05 Nov",
     # OJO: ajusta estas dos si tus fechas reales son otras.
     "Semana 9": "06 Nov - 12 Nov",
-    "Semana 10": "13 Nov - 19 Nov",
+    "Semana 10": "Nov 12 - Nov 19",
 }
 WEEK_ORDER = list(WEEK_MAP.values())
 
